@@ -34,24 +34,23 @@ export class RobotSystem extends createSystem(
 
   update(delta: number, time: number): void {
     this.delta += delta;
-    console.log(`dt: ${this.delta} coupled: ${this.coupled}`);
 
     const pad = this.input.xr.gamepads.right;
     const raySpace = this.input.xr.xrOrigin.raySpaces.right;
 
     if (!pad || !raySpace) return;
 
-    let event = "TRACK";
+    let type = "pose";
 
     if (pad.getButtonDown("xr-standard-squeeze") && !this.coupled) {
       this.coupled = true;
-      event = "START";
+      type = "init_pose";
     }
 
     if (pad.getButtonUp("xr-standard-squeeze")) {
       this.coupled = false;
       const data = {
-        event: "STOP",
+        type: "stop",
         timestamp: time,
         payload: {},
       };
@@ -71,7 +70,7 @@ export class RobotSystem extends createSystem(
     const gripper = pad.getButtonValue("xr-standard-trigger");
 
     const data = {
-      event: event,
+      type: type,
       timestamp: time,
       payload: {
         position: [currentPos.x, currentPos.y, currentPos.z],

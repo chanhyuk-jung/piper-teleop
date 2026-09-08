@@ -1,7 +1,7 @@
 import asyncio
 import json
-import threading
 import multiprocessing as mp
+import threading
 import time
 from queue import Queue
 
@@ -9,7 +9,7 @@ import numpy as np
 import placo
 from ischedule import run_loop, schedule
 from placo_utils.tf import tf
-from placo_utils.visualization import frame_viz, robot_frame_viz, robot_viz
+from placo_utils.visualization import frame_viz, get_viewer, robot_frame_viz, robot_viz
 from pyAgxArm import AgxArmFactory, ArmModel, PiperFW, create_agx_arm_config
 from scipy.spatial.transform import Rotation as R
 from scipy.spatial.transform import Slerp
@@ -52,10 +52,7 @@ effector_task = solver.add_frame_task("flange_joint", np.eye(4))
 effector_task.configure("flange_joint", "soft", 1e2, 0.1)
 
 joints_task = solver.add_joints_task()
-joints_task.set_joints({
-    f"joint{i+1}": 0.0
-    for i in range(6)
-})
+joints_task.set_joints({f"joint{i + 1}": 0.0 for i in range(6)})
 joints_task.configure("joints_regularization", "soft", 1e-5)
 
 if enable_collisions:
@@ -68,6 +65,10 @@ if enable_collisions:
     avoid_self_collisions.self_collisions_trigger = 0.03  # [m]
 
 viz = robot_viz(robot)
+
+vis = get_viewer()
+vis["/Cameras/default"].set_transform(tf.rotation_matrix(np.pi, [0, 0, 1]))
+vis["/Cameras/default/rotated/<object>"].set_property("zoom", 4.0)
 
 effector_task.T_world_frame = robot.get_T_world_frame("flange_joint")
 
@@ -100,15 +101,9 @@ end_effector.move_gripper_m(value=0.1, force=3.0)
 
 target_queue = Queue(maxsize=-1)
 
-ik_t0 = time.perf_counter()
 
 @schedule(interval=dt)
 def ik_loop():
-    global ik_t0
-    # print(f"ik_loop dt: {(time.perf_counter() - ik_t0) * 1000:.2f} queue size: {target_queue.qsize()}")
-
-    ik_t0 = time.perf_counter()
-
     target = target_queue.get()
 
     effector_task.T_world_frame = target["frame"]
@@ -156,29 +151,7 @@ async def handler(websocket):
     async for message in websocket:
         msg = json.loads(message)
 
-        event = msg["event"]
-
-        if event == 'STOP':
-            with target_queue.mutex:
-                target_queue.queue.clear()
-
-            continue
-
-        msg_dt = msg["timestamp"] - prev_timestamp
-        prev_timestamp = msg["timestamp"]
-
-        payload = msg["payload"]
-
-        pos = payload["position"]
-        quat = payload["quaternion"]
-
-        open_length = (1 - payload["gripper"]) ** 2 * 0.1
-
-        # print(f"msg loop dt: {msg_dt * 1000:.2f} queue_len: {target_queue.qsize()} event: {event}")
-
-        m = vr_to_flange(pos, quat)
-
-        if event == "START":
+        if msg["type"] == "init_pose":
             """
             ja = arm.get_joint_angles()
             while ja is None:
@@ -191,34 +164,62 @@ async def handler(websocket):
             """
 
             robot_m = robot.get_T_world_frame("flange_joint")
+
+            payload = msg["payload"]
+
+            pos = payload["position"]
+            quat = payload["quaternion"]
+
+            m = vr_to_flange(pos, quat)
+
             anchor_m = m.copy()
 
-        delta_pos = m[:3, -1] - anchor_m[:3, -1]
-        m[:3, -1] = delta_pos + robot_m[:3, -1]
+            prev_timestamp = msg["timestamp"]
+            prev_m = robot_m.copy()
+            prev_open_length = (1 - payload["gripper"]) ** 2 * 0.1
 
-        max_d = 0.0015
+            viz.display(robot.state.q)
+            robot_frame_viz(robot, "flange_joint")
+            frame_viz("target", robot_m)
 
-        dis = m[:3, -1] - prev_m[:3, -1]
-        mag = np.linalg.norm(dis)
+        elif msg["type"] == "pose":
+            msg_dt = msg["timestamp"] - prev_timestamp
+            prev_timestamp = msg["timestamp"]
 
-        if mag > max_d:
-            m[:3, -1] = dis / (mag + 1e-8) * max_d + prev_m[:3, -1]
+            payload = msg["payload"]
 
-        delta_rot = anchor_m[:3, :3].T @ m[:3, :3]
-        m[:3, :3] = robot_m[:3, :3] @ delta_rot
+            pos = payload["position"]
+            quat = payload["quaternion"]
 
-        max_rot = 0.01
+            open_length = (1 - payload["gripper"]) ** 2 * 0.1
 
-        rotation = R.from_matrix(prev_m[:3, :3].T @ m[:3, :3])
-        mag = rotation.magnitude()
+            m = vr_to_flange(pos, quat)
 
-        if mag > max_rot:
-            m[:3, :3] = (
-                prev_m[:3, :3]
-                @ R.from_rotvec(rotation.as_rotvec() / mag * max_rot).as_matrix()
-            )
+            delta_pos = m[:3, -1] - anchor_m[:3, -1]
+            m[:3, -1] = delta_pos + robot_m[:3, -1]
 
-        if event == "TRACK":
+            max_d = 0.0015
+
+            dis = m[:3, -1] - prev_m[:3, -1]
+            mag = np.linalg.norm(dis)
+
+            if mag > max_d:
+                m[:3, -1] = dis / (mag + 1e-8) * max_d + prev_m[:3, -1]
+
+            delta_rot = anchor_m[:3, :3].T @ m[:3, :3]
+            m[:3, :3] = robot_m[:3, :3] @ delta_rot
+
+            max_rot = 0.01
+
+            rotation = R.from_matrix(prev_m[:3, :3].T @ m[:3, :3])
+            mag = rotation.magnitude()
+
+            if mag > max_rot:
+                m[:3, :3] = (
+                    prev_m[:3, :3]
+                    @ R.from_rotvec(rotation.as_rotvec() / mag * max_rot).as_matrix()
+                )
+
             times = np.linspace(0, 1, num=min(max(int(msg_dt / dt), 1), 10_000))
 
             target_ms = np.eye(4)[None, :].repeat(len(times), axis=0)
@@ -227,28 +228,30 @@ async def handler(websocket):
                 times[:, None] * (m[:3, -1] - prev_m[:3, -1]) + prev_m[:3, -1]
             )
 
-            slerp = Slerp(
-                [0, 1],
-                R.from_matrix(np.stack([prev_m[:3, :3], m[:3, :3]]))
-            )
+            slerp = Slerp([0, 1], R.from_matrix(np.stack([prev_m[:3, :3], m[:3, :3]])))
             target_ms[:, :3, :3] = slerp(times).as_matrix()
 
-            target_open_lengths = (open_length - prev_open_length) * times + prev_open_length
+            target_open_lengths = (
+                open_length - prev_open_length
+            ) * times + prev_open_length
 
             for target_m, target_open_length in zip(target_ms, target_open_lengths):
                 target_queue.put({"frame": target_m, "gripper": target_open_length})
 
-        prev_m = m.copy()
-        prev_open_length = open_length
+            prev_m = m.copy()
+            prev_open_length = open_length
 
-        if effector_task.position().error_norm() > 0.05:
-            event = {"event": "VIBRATE"}
-            await websocket.send(json.dumps(event))
+            if effector_task.position().error_norm() > 0.05:
+                event = {"event": "VIBRATE"}
+                await websocket.send(json.dumps(event))
 
-        viz.display(robot.state.q)
-        robot_frame_viz(robot, "flange_joint")
-        frame_viz("target", effector_task.T_world_frame)
+            viz.display(robot.state.q)
+            robot_frame_viz(robot, "flange_joint")
+            frame_viz("target", m)
 
+        elif msg["type"] == "stop":
+            with target_queue.mutex:
+                target_queue.queue.clear()
 
 
 async def main():
