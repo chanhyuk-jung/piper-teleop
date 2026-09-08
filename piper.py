@@ -3,6 +3,7 @@ from typing import Optional
 
 import numpy as np
 import placo
+from placo_utils.visualization import frame_viz, get_viewer, robot_frame_viz, robot_viz
 
 
 @dataclass
@@ -15,6 +16,7 @@ class PiperIK:
 
     effector_name: str
     gripper_name: str = "gripper"
+    gripper_max: float = 0.1
 
     def __init__(self, urdf_path: str, effector_name: str = "flange_joint"):
         self.robot = placo.RobotWrapper(urdf_path)
@@ -31,6 +33,8 @@ class PiperIK:
         self.effector_task = self.solver.add_frame_task(self.effector_name, np.eye(4))
 
         self.gripper_task = self.solver.add_joints_task()
+
+        self._viz = None
 
     def set_joints(self, joints, gripper: Optional[float] = None):
         for i, joint in enumerate(joints):
@@ -84,3 +88,29 @@ class PiperIK:
     @property
     def q(self):
         return self.robot.state.q
+
+    def viz(self):
+        if self._viz is not None:
+            return self._viz
+
+        self._viz = self.make_viz()
+
+        return self._viz
+
+    def make_viz(self):
+        viz = robot_viz(self.robot)
+
+        vis = get_viewer()
+        vis["/Cameras/default/rotated/<object>"].set_property("zoom", 4.0)
+
+        return viz
+
+    def render(self):
+        if self._viz is None:
+            self._viz = self.make_viz()
+
+        self._viz.display(self.q)
+
+        robot_frame_viz(self.robot, self.effector_name)
+
+        frame_viz("target", self.get_goal_frame())

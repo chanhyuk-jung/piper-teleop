@@ -4,10 +4,7 @@ import threading
 from queue import Queue
 
 import numpy as np
-import placo
 from ischedule import run_loop, schedule
-from placo_utils.tf import tf
-from placo_utils.visualization import frame_viz, get_viewer, robot_frame_viz, robot_viz
 from pyAgxArm import AgxArmFactory, ArmModel, PiperFW, create_agx_arm_config
 from scipy.spatial.transform import Rotation as R
 from scipy.spatial.transform import Slerp
@@ -35,36 +32,14 @@ def setup_robot(
 
     robot.effector_task.configure(robot.effector_name, "soft", pos_weight, rot_weight)
 
-    ik.set_goal(ik.get_frame())
-
-
-
-def make_viz(robot: placo.RobotWrapper):
-    viz = robot_viz(robot)
-
-    vis = get_viewer()
-
-    vis["/Cameras/default/rotated/<object>"].set_property("zoom", 4.0)
-
-    return viz
-
-
-def render(viz, ik):
-    viz.display(ik.q)
-
-    robot_frame_viz(ik.robot, ik.effector_name)
-
-    frame = ik.get_goal_frame()
-    frame_viz("target", frame)
+    ik.set_goal(ik.get_frame(), ik.gripper_max)
 
 
 ik = PiperIK("piper")
 
 setup_robot(ik, dt=dt)
 
-viz = make_viz(ik.robot)
-
-render(viz, ik)
+ik.render()
 
 """
 cfg = create_agx_arm_config(
@@ -161,9 +136,9 @@ async def handler(websocket):
 
             prev_timestamp = msg["timestamp"]
             prev_m = robot_m.copy()
-            prev_open_length = (1 - payload["gripper"]) ** 2 * 0.1
+            prev_open_length = payload["gripper"] ** 2 * ik.gripper_max
 
-            render(viz, ik)
+            ik.render()
 
         elif msg["type"] == "pose":
             msg_dt = msg["timestamp"] - prev_timestamp
@@ -174,7 +149,7 @@ async def handler(websocket):
             pos = payload["position"]
             quat = payload["quaternion"]
 
-            open_length = (1 - payload["gripper"]) ** 2 * 0.1
+            open_length = payload["gripper"] ** 2 * ik.gripper_max
 
             m = vr_to_flange(pos, quat)
 
@@ -228,7 +203,7 @@ async def handler(websocket):
                 event = {"event": "VIBRATE"}
                 await websocket.send(json.dumps(event))
 
-            render(viz, ik)
+            ik.render()
 
         elif msg["type"] == "stop":
             with goal_q.mutex:
