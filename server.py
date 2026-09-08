@@ -32,7 +32,7 @@ def setup_robot(
 
     robot.effector_task.configure(robot.effector_name, "soft", pos_weight, rot_weight)
 
-    ik.set_goal(ik.get_frame(), ik.gripper_max)
+    ik.set_goal(ik.get_frame(), 0)
 
 
 ik = PiperIK("piper")
