@@ -40,28 +40,6 @@ arm.connect()
 arm.disable()
 
 
-# @schedule(interval=dt)
-def solve():
-    global t
-    t += dt
-
-    m = tf.translation_matrix([0.3, 0.2 * np.sin(t), 0.2])
-
-    rotation = R.from_euler("xyz", [0, -180, 0], degrees=True)
-    m[:3, :3] = rotation.as_matrix()
-
-    effector_task.T_world_frame = m
-
-    # Solving the IK
-    solver.solve(True)
-    robot.update_kinematics()
-
-    # Displaying the robot, effector and target
-    viz.display(robot.state.q)
-    robot_frame_viz(robot, "joint6")
-    frame_viz("target", effector_task.T_world_frame)
-
-
 @schedule(interval=dt)
 def loop():
     global t
