@@ -43,7 +43,7 @@ def make_viz(robot: placo.RobotWrapper):
     viz = robot_viz(robot)
 
     vis = get_viewer()
-    vis["/Cameras/default"].set_transform(tf.rotation_matrix(np.pi, [0, 0, 1]))
+
     vis["/Cameras/default/rotated/<object>"].set_property("zoom", 4.0)
 
     return viz
