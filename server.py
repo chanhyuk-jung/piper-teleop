@@ -35,6 +35,9 @@ def setup_robot(
 
     robot.effector_task.configure(robot.effector_name, "soft", pos_weight, rot_weight)
 
+    ik.set_goal(ik.get_frame())
+
+
 
 def make_viz(robot: placo.RobotWrapper):
     viz = robot_viz(robot)
