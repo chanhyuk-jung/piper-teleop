@@ -1,0 +1,5 @@
+placo
+scipy
+websockets
+git+https://github.com/agilexrobotics/pyAgxArm.git
+schedule
