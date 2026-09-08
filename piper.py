@@ -70,9 +70,11 @@ class PiperIK:
     def dt(self, value: float):
         self.solver.dt = value
 
-    def set_goal(self, frame, gripper):
+    def set_goal(self, frame, gripper: Optional[float] = None):
         self.effector_task.T_world_frame = frame
-        self.gripper_task.set_joint(self.gripper_name, gripper)
+
+        if gripper is not None:
+            self.gripper_task.set_joint(self.gripper_name, gripper)
 
     def get_goal_frame(self):
         frame = self.effector_task.T_world_frame
