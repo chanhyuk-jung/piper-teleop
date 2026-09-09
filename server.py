@@ -1,6 +1,7 @@
 import asyncio
 import json
 import threading
+import time
 from queue import Queue
 
 import numpy as np
@@ -12,17 +13,19 @@ from scipy.spatial.transform import Rotation as R
 from scipy.spatial.transform import Slerp
 from websockets.asyncio.server import serve
 
-HOST = "0.0.0.0"
 PORT = 65432
 
-dt = 0.005
+dt = 0.008
 
-effector_name = "flange_joint"
+effector_name = "gripper_tip"
 gripper_name = "gripper"
 gripper_max = 0.1
 
-pos_weight = 1e2
-rot_weight = 1e-1
+pos_weight = 1.0
+rot_weight = 1e-4
+
+max_d = 0.01
+max_rot = 0.2
 
 
 robot = placo.RobotWrapper("piper")
@@ -41,19 +44,18 @@ gear_task.set_gear("gripper_joint1", "gripper", 0.5)
 gear_task.set_gear("gripper_joint2", "gripper", -0.5)
 
 effector_task = solver.add_frame_task(effector_name, np.eye(4))
-gripper_task = solver.add_joints_task()
-
 effector_task.configure(effector_name, "soft", pos_weight, rot_weight)
+
+gripper_task = solver.add_joints_task()
+gripper_task.configure(gripper_name, "soft", 1.0)
 
 effector_task.T_world_frame = robot.get_T_world_frame(effector_name)
 gripper_task.set_joint(gripper_name, 0)
 
+regularization_task = solver.add_regularization_task(1e-4)
+
 
 viz = robot_viz(robot)
-
-vis = get_viewer()
-vis["/Cameras/default/rotated/<object>"].set_property("zoom", 4.0)
-
 
 viz.display(robot.state.q)
 
@@ -61,7 +63,6 @@ robot_frame_viz(robot, effector_name)
 
 frame_viz("target", effector_task.T_world_frame)
 
-"""
 cfg = create_agx_arm_config(
     robot=ArmModel.PIPER, firmeware_version=PiperFW.DEFAULT, channel="can0"
 )
@@ -81,8 +82,7 @@ time.sleep(0.1)
 
 arm.move_j([0 for _ in range(6)])
 
-end_effector.move_gripper_m(value=0.1, force=3.0)
-"""
+end_effector.move_gripper_m(value=0.0, force=3.0)
 
 goal_q = Queue(maxsize=-1)
 
@@ -97,13 +97,11 @@ def ik_loop():
     solver.solve(True)
     robot.update_kinematics()
 
-    """
     joints = [robot.get_joint(f"joint{i + 1}") for i in range(6)]
     gripper = robot.get_joint("gripper")
 
-    arm.move_j(state)
+    arm.move_j(joints)
     end_effector.move_gripper_m(value=gripper, force=1.0)
-    """
 
 
 def vr_to_flange(pos, quat):
@@ -130,33 +128,29 @@ async def handler(websocket):
     prev_m = np.eye(4)
     prev_open_length = 0
 
-    prev_timestamp = 0
-
     async for message in websocket:
         msg = json.loads(message)
 
         if msg["type"] == "init_pose":
-            """
             ja = arm.get_joint_angles()
             while ja is None:
                 ja = arm.get_joint_angles()
 
+            gs = end_effector.get_gripper_status()
+
             joints = [ja.msg[i] for i in range(6)]
 
-            gs = end_effector.get_gripper_status()
-            gripper = gs.msg.value
+            if gs is not None:
+                gripper = max(gs.msg.value, 0) ** (1 / 2) * gripper_max
 
-            for i, joint in enumerate(joints):
-                solver.robot.set_joint(f"joint{i + 1}", joint)
-
-            if gripper is not None:
-                assert 0.1 >= gripper >= 0
                 robot.set_joint("gripper", gripper)
                 robot.set_joint("gripper_joint1", gripper / 2)
                 robot.set_joint("gripper_joint2", -gripper / 2)
 
+            for i, joint in enumerate(joints):
+                solver.robot.set_joint(f"joint{i + 1}", joint)
+
             robot.update_kinematics()
-            """
 
             robot_m = robot.get_T_world_frame(effector_name)
             prev_open_length = robot.get_joint(gripper_name)
@@ -170,7 +164,6 @@ async def handler(websocket):
 
             anchor_m = m.copy()
 
-            prev_timestamp = msg["timestamp"]
             prev_m = robot_m.copy()
 
             viz.display(robot.state.q)
@@ -180,22 +173,19 @@ async def handler(websocket):
             frame_viz("target", effector_task.T_world_frame)
 
         elif msg["type"] == "pose":
-            msg_dt = msg["timestamp"] - prev_timestamp
-            prev_timestamp = msg["timestamp"]
+            msg_dt = msg["delta"]
 
             payload = msg["payload"]
 
             pos = payload["position"]
             quat = payload["quaternion"]
 
-            open_length = payload["gripper"] ** 2 * gripper_max
+            open_length = payload["gripper"] ** (1 / 2) * gripper_max
 
             m = vr_to_flange(pos, quat)
 
             delta_pos = m[:3, -1] - anchor_m[:3, -1]
             m[:3, -1] = delta_pos + robot_m[:3, -1]
-
-            max_d = 0.0015
 
             dis = m[:3, -1] - prev_m[:3, -1]
             mag = np.linalg.norm(dis)
@@ -205,8 +195,6 @@ async def handler(websocket):
 
             delta_rot = anchor_m[:3, :3].T @ m[:3, :3]
             m[:3, :3] = robot_m[:3, :3] @ delta_rot
-
-            max_rot = 0.01
 
             rotation = R.from_matrix(prev_m[:3, :3].T @ m[:3, :3])
             mag = rotation.magnitude()
@@ -238,9 +226,11 @@ async def handler(websocket):
             prev_m = m.copy()
             prev_open_length = open_length
 
-            if effector_task.position().error_norm() > 0.05:
+            """
+            if effector_task.position().error_norm() > 0.05 or effector_task.orientation().error_norm() > 0.05:
                 event = {"event": "VIBRATE"}
                 await websocket.send(json.dumps(event))
+            """
 
             viz.display(robot.state.q)
 
@@ -254,12 +244,14 @@ async def handler(websocket):
 
 
 async def main():
-    server = await serve(handler, host=HOST, port=PORT)
+    server = await serve(handler, host="0.0.0.0", port=PORT)
     await server.serve_forever()
 
 
 if __name__ == "__main__":
     t = threading.Thread(target=run_loop, daemon=True)
     t.start()
+
+    print(f"websocket server running at http://127.0.0.1:{PORT}")
 
     asyncio.run(main())

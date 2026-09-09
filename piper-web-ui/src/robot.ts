@@ -11,12 +11,10 @@ export class RobotSystem extends createSystem(
   {},
   {
     scale: { type: Types.Float32, default: 1 },
-    serverIp: { type: Types.String, default: "localhost:65432" },
+    serverIp: { type: Types.String, default: `ws://${window.location.hostname}:65432` },
   },
 ) {
-  private coupled = false;
-  private socket = new WebSocket(`ws://${this.config.serverIp.value}`);
-  private delta = 0;
+  private socket = new WebSocket(this.config.serverIp.value);
 
   init(): void {
     this.socket.addEventListener("message", ({ data }) => {
@@ -33,53 +31,46 @@ export class RobotSystem extends createSystem(
   }
 
   update(delta: number, time: number): void {
-    this.delta += delta;
-
     const pad = this.input.xr.gamepads.right;
     const raySpace = this.input.xr.xrOrigin.raySpaces.right;
 
     if (!pad || !raySpace) return;
 
-    let type = "pose";
-
-    if (pad.getButtonDown("xr-standard-squeeze") && !this.coupled) {
-      this.coupled = true;
-      type = "init_pose";
-    }
-
-    if (pad.getButtonUp("xr-standard-squeeze")) {
-      this.coupled = false;
-      const data = {
-        type: "stop",
-        timestamp: time,
-        payload: {},
-      };
-
-      this.socket.send(JSON.stringify(data));
-      return;
-    }
-
-    if (!this.coupled) return;
-
-    const currentPos = new Vector3();
-    const currentQuat = new Quaternion();
-
-    raySpace.getWorldPosition(currentPos);
-    raySpace.getWorldQuaternion(currentQuat);
-
-    const gripper = pad.getButtonValue("xr-standard-trigger");
-
-    const data = {
-      type: type,
+    let msg = {
+      type: "null",
       timestamp: time,
-      payload: {
-        position: [currentPos.x, currentPos.y, currentPos.z],
-        quaternion: currentQuat,
-        gripper: gripper,
-      },
+      delta: delta,
+      payload: {},
     };
 
-    this.socket.send(JSON.stringify(data));
-    this.delta = 0;
+    if (pad.getButtonUp("xr-standard-squeeze")) {
+      msg["type"] = "stop";
+    } else {
+      const currentPos = new Vector3();
+      const currentQuat = new Quaternion();
+
+      raySpace.getWorldPosition(currentPos);
+      raySpace.getWorldQuaternion(currentQuat);
+
+      const gripper = pad.getButtonValue("xr-standard-trigger");
+
+      if (pad.getButtonDown("xr-standard-squeeze")) {
+        msg["type"] = "init_pose";
+        msg["payload"] = {
+          position: [currentPos.x, currentPos.y, currentPos.z],
+          quaternion: currentQuat,
+          gripper: gripper,
+        };
+      } else if (pad.getButtonPressed("xr-standard-squeeze")) {
+        msg["type"] = "pose";
+        msg["payload"] = {
+          position: [currentPos.x, currentPos.y, currentPos.z],
+          quaternion: currentQuat,
+          gripper: gripper,
+        };
+      }
+    }
+
+    this.socket.send(JSON.stringify(msg));
   }
 }
