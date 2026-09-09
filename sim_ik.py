@@ -14,8 +14,8 @@ solver = placo.KinematicsSolver(robot)
 solver.mask_fbase(True)
 solver.enable_velocity_limits(True)
 
-effector_task = solver.add_frame_task("flange_joint", np.eye(4))
-effector_task.configure("flange_joint", "soft", 1.0, 1.0)
+effector_task = solver.add_frame_task("gripper_tip", np.eye(4))
+effector_task.configure("gripper_tip", "soft", 1.0, 0.01)
 
 viz = robot_viz(robot)
 
@@ -29,7 +29,7 @@ def loop():
     global t
     t += dt
 
-    m = tf.translation_matrix([0.3, 0.2 * np.sin(t), 0.2])
+    m = tf.translation_matrix([0.4, 0.2 * np.sin(t), 0.2])
 
     rotation = R.from_euler("xyz", [0, -180, 0], degrees=True)
     m[:3, :3] = rotation.as_matrix()
@@ -42,7 +42,7 @@ def loop():
 
     # Displaying the robot, effector and target
     viz.display(robot.state.q)
-    robot_frame_viz(robot, "flange_joint")
+    robot_frame_viz(robot, "gripper_tip")
     frame_viz("target", effector_task.T_world_frame)
 
 
