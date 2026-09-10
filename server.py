@@ -1,6 +1,7 @@
 import asyncio
 import json
 import threading
+import time
 from dataclasses import KW_ONLY, dataclass, field
 from queue import Queue
 
@@ -11,7 +12,7 @@ from ischedule import run_loop, schedule
 from placo_utils.visualization import frame_viz, robot_frame_viz, robot_viz
 from pyAgxArm import AgxArmFactory, ArmModel, PiperFW, create_agx_arm_config
 from scipy.spatial.transform import Rotation as R
-from websockets.asyncio.server import serve
+from websockets.asyncio.server import ServerConnection, serve
 
 max_d = 0.01
 max_rot = 0.2
@@ -165,7 +166,7 @@ def vr_to_flange(pos, quat):
     return m
 
 
-async def handler(websocket):
+async def handler(websocket: ServerConnection):
     robot_m = np.eye(4)
     anchor_m = np.eye(4)
 
@@ -175,7 +176,7 @@ async def handler(websocket):
     async for message in websocket:
         msg = json.loads(message)
 
-        if msg["type"] == "init_pose":
+        if msg["type"] == "start":
             """
             # get robot state
             ja = arm.get_joint_angles()
@@ -212,7 +213,7 @@ async def handler(websocket):
             prev_m = robot_m.copy()
             prev_gripper = k.get_gripper()
 
-        elif msg["type"] == "pose":
+        elif msg["type"] == "move":
             payload = msg["payload"]
 
             gripper = payload["gripper"] ** (1 / 2) * k.gripper_max
@@ -258,6 +259,18 @@ async def handler(websocket):
             with goal_q.mutex:
                 goal_q.queue.clear()
 
+        elif msg["type"] == "reset":
+            with goal_q.mutex:
+                goal_q.queue.clear()
+
+            """
+            arm.move_j([0] * 6)
+            end_effector.move_gripper_m(value=0, force=0.0)
+            """
+
+            k.set_joints([0] * 6)
+            k.set_gripper(0)
+
         viz.display(k.robot.state.q)
         robot_frame_viz(k.robot, k.effector_name)
         frame_viz("target", k.effector_task.T_world_frame)
@@ -274,13 +287,10 @@ async def async_serve(port):
 def main(port):
     stop_event = threading.Event()
 
-    t = threading.Thread(target=run_loop, args=(stop_event,))
+    t = threading.Thread(target=run_loop, args=(stop_event,), daemon=True)
     t.start()
 
     asyncio.run(async_serve(port))
-
-    stop_event.set()
-    t.join()
 
 
 if __name__ == "__main__":

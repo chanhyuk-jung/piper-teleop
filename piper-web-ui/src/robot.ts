@@ -37,37 +37,35 @@ export class RobotSystem extends createSystem(
     if (!pad || !raySpace) return;
 
     let msg = {
-      type: "null",
+      type: "",
       delta: delta,
       timestamp: time,
       payload: {},
     };
 
-    if (pad.getButtonUp("xr-standard-squeeze")) {
+    if (pad.getButtonDown("a-button")) {
+      msg["type"] = "reset";
+    }
+
+    if (pad.getButtonUp("thumbrest")) {
       msg["type"] = "stop";
-    } else {
+    } else if (pad.getButtonPressed("thumbrest")) {
       const currentPos = new Vector3();
       const currentQuat = new Quaternion();
 
       raySpace.getWorldPosition(currentPos);
       raySpace.getWorldQuaternion(currentQuat);
 
-      const gripper = pad.getButtonValue("xr-standard-trigger");
+      msg["payload"] = {
+        position: [currentPos.x, currentPos.y, currentPos.z],
+        quaternion: currentQuat,
+        gripper: pad.getButtonValue("xr-standard-trigger"),
+      };
 
-      if (pad.getButtonDown("xr-standard-squeeze")) {
-        msg["type"] = "init_pose";
-        msg["payload"] = {
-          position: [currentPos.x, currentPos.y, currentPos.z],
-          quaternion: currentQuat,
-          gripper: gripper,
-        };
-      } else if (pad.getButtonPressed("xr-standard-squeeze")) {
-        msg["type"] = "pose";
-        msg["payload"] = {
-          position: [currentPos.x, currentPos.y, currentPos.z],
-          quaternion: currentQuat,
-          gripper: gripper,
-        };
+      if (pad.getButtonDown("thumbrest")) {
+        msg["type"] = "start";
+      } else {
+        msg["type"] = "move";
       }
     }
 
