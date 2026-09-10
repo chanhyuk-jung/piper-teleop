@@ -1,6 +1,7 @@
 import asyncio
 import json
 import threading
+from dataclasses import KW_ONLY, dataclass, field
 from queue import Queue
 
 import click
@@ -12,62 +13,100 @@ from pyAgxArm import AgxArmFactory, ArmModel, PiperFW, create_agx_arm_config
 from scipy.spatial.transform import Rotation as R
 from websockets.asyncio.server import serve
 
-# configs
-dt = 0.008
-
-effector_name = "gripper_tcp"
-gripper_name = "gripper"
-
-gripper_max = 0.1
-
-pos_weight = 1.0
-rot_weight = 1e-4
-
 max_d = 0.01
 max_rot = 0.2
 
 
-robot = placo.RobotWrapper("piper")
+@dataclass
+class Kinematics:
+    urdf_path: str
 
-# configure solver
-solver = placo.KinematicsSolver(robot)
+    _: KW_ONLY
+    effector_name: str = "gripper_tcp"
+    gripper_name: str = "gripper"
+    dt: float = 0.008
+    pos_weight: float = 1.0
+    rot_weight: float = 1e-4
+    gripper_max: float = 0.1
 
-solver.dt = dt
+    robot: placo.RobotWrapper = field(init=False)
+    solver: placo.KinematicsSolver = field(init=False)
 
-solver.mask_fbase(True)
-solver.enable_velocity_limits(True)
-solver.enable_joint_limits(True)
+    effector_task: placo.FrameTask = field(init=False)
+    gripper_task: placo.JointsTask = field(init=False)
+
+    def __post_init__(self):
+        self.robot = robot = placo.RobotWrapper(self.urdf_path)
+
+        self.solver = solver = placo.KinematicsSolver(robot)
+
+        solver.dt = self.dt
+
+        solver.mask_fbase(True)
+        solver.enable_velocity_limits(True)
+        solver.enable_joint_limits(True)
+
+        gear_task = solver.add_gear_task()
+        gear_task.configure("gear", "hard")
+
+        gear_task.set_gear("gripper_joint1", "gripper", 0.5)
+        gear_task.set_gear("gripper_joint2", "gripper", -0.5)
+
+        self.effector_task = effector_task = solver.add_frame_task(
+            self.effector_name, np.eye(4)
+        )
+        effector_task.configure(
+            self.effector_name, "soft", self.pos_weight, self.rot_weight
+        )
+
+        self.gripper_task = gripper_task = solver.add_joints_task()
+        gripper_task.configure(self.gripper_name, "soft", 1.0)
+
+        effector_task.T_world_frame = solver.robot.get_T_world_frame(self.effector_name)
+        gripper_task.set_joint(self.gripper_name, 0)
+
+        regularization_task = solver.add_regularization_task(1e-4)
+
+    def set_joints(self, joints):
+        for i, joint in enumerate(joints):
+            self.solver.robot.set_joint(f"joint{i + 1}", joint)
+
+        self.robot.update_kinematics()
+
+    def get_joints(self):
+        joints = [self.robot.get_joint(f"joint{i + 1}") for i in range(6)]
+        return joints
+
+    def set_gripper(self, meters: float):
+        self.robot.set_joint("gripper", meters)
+        self.robot.set_joint("gripper_joint1", meters / 2)
+        self.robot.set_joint("gripper_joint2", -meters / 2)
+
+        self.robot.update_kinematics()
+
+    def get_gripper(self):
+        gripper = self.robot.get_joint(self.gripper_name)
+        return gripper
+
+    def forward(self):
+        return self.robot.get_T_world_frame(self.effector_name)
+
+    def inverse(self, frame, gripper: float):
+        self.effector_task.T_world_frame = frame
+        self.gripper_task.set_joint(self.gripper_name, gripper)
+
+        self.solver.solve(True)
+        self.robot.update_kinematics()
 
 
-# setup gripper
-gear_task = solver.add_gear_task()
-gear_task.configure("gear", "hard")
-
-gear_task.set_gear("gripper_joint1", "gripper", 0.5)
-gear_task.set_gear("gripper_joint2", "gripper", -0.5)
-
-
-# setup ik task
-effector_task = solver.add_frame_task(effector_name, np.eye(4))
-effector_task.configure(effector_name, "soft", pos_weight, rot_weight)
-
-gripper_task = solver.add_joints_task()
-gripper_task.configure(gripper_name, "soft", 1.0)
-
-effector_task.T_world_frame = robot.get_T_world_frame(effector_name)
-gripper_task.set_joint(gripper_name, 0)
-
-
-# setup ik regularization
-regularization_task = solver.add_regularization_task(1e-4)
-
+k = Kinematics("piper")
 
 # setup visualization
-viz = robot_viz(robot)
+viz = robot_viz(k.robot)
 
-viz.display(robot.state.q)
-robot_frame_viz(robot, effector_name)
-frame_viz("target", effector_task.T_world_frame)
+viz.display(k.robot.state.q)
+robot_frame_viz(k.robot, k.effector_name)
+frame_viz("target", k.effector_task.T_world_frame)
 
 
 """
@@ -96,21 +135,17 @@ end_effector.move_gripper_m(value=0.0, force=3.0)
 goal_q = Queue(maxsize=-1)
 
 
-@schedule(interval=dt)
+@schedule(interval=k.dt)
 def ik_loop():
     if goal_q.empty():
         return
 
     goal = goal_q.get()
 
-    effector_task.T_world_frame = goal["frame"]
-    gripper_task.set_joint(gripper_name, goal["gripper"])
+    k.inverse(goal["frame"], goal["gripper"])
 
-    solver.solve(True)
-    robot.update_kinematics()
-
-    joints = [robot.get_joint(f"joint{i + 1}") for i in range(6)]
-    gripper = robot.get_joint("gripper")
+    joints = k.get_joints()
+    gripper = k.get_gripper()
 
     """
     arm.move_j(joints)
@@ -168,19 +203,19 @@ async def handler(websocket):
             """
 
             # fk robot frame
-            robot_m = robot.get_T_world_frame(effector_name)
+            robot_m = k.forward()
 
             payload = msg["payload"]
             m = vr_to_flange(payload["position"], payload["quaternion"])
 
             anchor_m = m.copy()
             prev_m = robot_m.copy()
-            prev_gripper = robot.get_joint(gripper_name)
+            prev_gripper = k.get_gripper()
 
         elif msg["type"] == "pose":
             payload = msg["payload"]
 
-            gripper = payload["gripper"] ** (1 / 2) * gripper_max
+            gripper = payload["gripper"] ** (1 / 2) * k.gripper_max
             m = vr_to_flange(payload["position"], payload["quaternion"])
 
             delta_pos = m[:3, -1] - anchor_m[:3, -1]
@@ -208,7 +243,7 @@ async def handler(websocket):
             m[:3, :3] = m_rot.as_matrix()
 
             # interpolate frames
-            times = np.linspace(0, 1, num=int(msg["delta"] / dt))
+            times = np.linspace(0, 1, num=int(msg["delta"] / k.dt))
 
             for t in times:
                 target_m = placo.interpolate_frames(prev_m, m, t)
@@ -223,9 +258,9 @@ async def handler(websocket):
             with goal_q.mutex:
                 goal_q.queue.clear()
 
-        viz.display(robot.state.q)
-        robot_frame_viz(robot, effector_name)
-        frame_viz("target", effector_task.T_world_frame)
+        viz.display(k.robot.state.q)
+        robot_frame_viz(k.robot, k.effector_name)
+        frame_viz("target", k.effector_task.T_world_frame)
 
 
 async def async_serve(port):
