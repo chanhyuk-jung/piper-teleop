@@ -14,8 +14,8 @@ solver = placo.KinematicsSolver(robot)
 solver.mask_fbase(True)
 solver.enable_velocity_limits(True)
 
-effector_task = solver.add_frame_task("gripper_tip", np.eye(4))
-effector_task.configure("gripper_tip", "soft", 1.0, 0.01)
+effector_task = solver.add_frame_task("gripper_tcp", np.eye(4))
+effector_task.configure("gripper_tcp", "soft", 1.0, 0.01)
 
 viz = robot_viz(robot)
 
@@ -42,7 +42,7 @@ def loop():
 
     # Displaying the robot, effector and target
     viz.display(robot.state.q)
-    robot_frame_viz(robot, "gripper_tip")
+    robot_frame_viz(robot, "gripper_tcp")
     frame_viz("target", effector_task.T_world_frame)
 
 

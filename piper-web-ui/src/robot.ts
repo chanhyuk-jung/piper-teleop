@@ -38,8 +38,8 @@ export class RobotSystem extends createSystem(
 
     let msg = {
       type: "null",
-      timestamp: time,
       delta: delta,
+      timestamp: time,
       payload: {},
     };
 

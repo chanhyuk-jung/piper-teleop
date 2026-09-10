@@ -298,11 +298,11 @@
     <limit effort="10" lower="-0.05" upper="0" velocity="0.5"/>
     <mimic joint="gripper" multiplier="-0.5" offset="0.0"/>
   </joint>
-  <link name="gripper_end" />
-  <joint name="gripper_tip" type="fixed">
+  <link name="gripper_tcp_link"/>
+  <joint name="gripper_tcp" type="fixed">
     <origin rpy="0 0 0" xyz="0 0 0.138"/>
     <parent link="gripper_base"/>
-    <child link="gripper_end"/>
+    <child link="gripper_tcp_link"/>
     <axis xyz="0 0 1"/>
   </joint>
 </robot>
