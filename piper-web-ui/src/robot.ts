@@ -14,6 +14,7 @@ export class RobotSystem extends createSystem(
     serverIp: { type: Types.String, default: `ws://${window.location.hostname}:65432` },
   },
 ) {
+  private coupled = false;
   private socket = new WebSocket(this.config.serverIp.value);
 
   init(): void {
@@ -31,6 +32,8 @@ export class RobotSystem extends createSystem(
   }
 
   update(delta: number, time: number): void {
+    if (this.socket.readyState !== WebSocket.OPEN) return;
+
     const pad = this.input.xr.gamepads.right;
     const raySpace = this.input.xr.xrOrigin.raySpaces.right;
 
@@ -43,13 +46,22 @@ export class RobotSystem extends createSystem(
       payload: {},
     };
 
+    if (pad.getButtonDown("xr-standard-squeeze")) {
+      this.coupled = true;
+      msg["type"] = "start";
+    } else if (this.coupled && pad.getButtonPressed("xr-standard-squeeze")) {
+      msg["type"] = "move";
+    } else if (this.coupled) {
+      this.coupled = false;
+      msg["type"] = "stop";
+    }
+
     if (pad.getButtonDown("a-button")) {
+      this.coupled = false;
       msg["type"] = "reset";
     }
 
-    if (pad.getButtonUp("thumbrest")) {
-      msg["type"] = "stop";
-    } else if (pad.getButtonPressed("thumbrest")) {
+    if (this.coupled) {
       const currentPos = new Vector3();
       const currentQuat = new Quaternion();
 
@@ -61,12 +73,6 @@ export class RobotSystem extends createSystem(
         quaternion: currentQuat,
         gripper: pad.getButtonValue("xr-standard-trigger"),
       };
-
-      if (pad.getButtonDown("thumbrest")) {
-        msg["type"] = "start";
-      } else {
-        msg["type"] = "move";
-      }
     }
 
     this.socket.send(JSON.stringify(msg));

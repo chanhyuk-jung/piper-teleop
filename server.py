@@ -110,7 +110,6 @@ robot_frame_viz(k.robot, k.effector_name)
 frame_viz("target", k.effector_task.T_world_frame)
 
 
-"""
 # setup robot arm
 cfg = create_agx_arm_config(
     robot=ArmModel.PIPER, firmeware_version=PiperFW.DEFAULT, channel="can0"
@@ -130,7 +129,6 @@ time.sleep(0.1)
 # reset to home
 arm.move_j([0 for _ in range(6)])
 end_effector.move_gripper_m(value=0.0, force=3.0)
-"""
 
 
 goal_q = Queue(maxsize=-1)
@@ -148,10 +146,8 @@ def ik_loop():
     joints = k.get_joints()
     gripper = k.get_gripper()
 
-    """
     arm.move_j(joints)
     end_effector.move_gripper_m(value=gripper, force=1.0)
-    """
 
 
 def vr_to_flange(pos, quat):
@@ -177,7 +173,6 @@ async def handler(websocket: ServerConnection):
         msg = json.loads(message)
 
         if msg["type"] == "start":
-            """
             # get robot state
             ja = arm.get_joint_angles()
             gs = end_effector.get_gripper_status()
@@ -190,18 +185,12 @@ async def handler(websocket: ServerConnection):
                     gs = end_effector.get_gripper_status()
 
             joints = [ja.msg[i] for i in range(6)]
-            gripper = max(gs.msg.value, 0) ** (1 / 2) * gripper_max
+            gripper = max(gs.msg.value, 0) ** (1 / 2) * k.gripper_max
 
             # sync robot state
-            for i, joint in enumerate(joints):
-                solver.robot.set_joint(f"joint{i + 1}", joint)
+            k.set_joints(joints)
 
-            robot.set_joint("gripper", gripper)
-            robot.set_joint("gripper_joint1", gripper / 2)
-            robot.set_joint("gripper_joint2", -gripper / 2)
-
-            robot.update_kinematics()
-            """
+            k.set_gripper(gripper)
 
             # fk robot frame
             robot_m = k.forward()
@@ -263,10 +252,8 @@ async def handler(websocket: ServerConnection):
             with goal_q.mutex:
                 goal_q.queue.clear()
 
-            """
             arm.move_j([0] * 6)
             end_effector.move_gripper_m(value=0, force=0.0)
-            """
 
             k.set_joints([0] * 6)
             k.set_gripper(0)
