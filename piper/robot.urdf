@@ -82,7 +82,7 @@
     <parent link="link1"/>
     <child link="link2"/>
     <axis xyz="0 0 1"/>
-    <limit effort="100" lower="0" upper="3.1415926" velocity="3.4"/>
+    <limit effort="100" lower="0" upper="3.1415926" velocity="3"/>
   </joint>
   <link name="link3">
     <inertial>
@@ -108,7 +108,7 @@
     <parent link="link2"/>
     <child link="link3"/>
     <axis xyz="0 0 1"/>
-    <limit effort="100" lower="-2.9670597" upper="0" velocity="3.14"/>
+    <limit effort="100" lower="-2.9670597" upper="0" velocity="3"/>
   </joint>
   <link name="link4">
     <inertial>
@@ -134,7 +134,7 @@
     <parent link="link3"/>
     <child link="link4"/>
     <axis xyz="0 0 1"/>
-    <limit effort="100" lower="-1.7453292" upper="1.7453292" velocity="3.92"/>
+    <limit effort="100" lower="-1.7453292" upper="1.7453292" velocity="3/>
   </joint>
   <link name="link5">
     <inertial>
@@ -160,7 +160,7 @@
     <parent link="link4"/>
     <child link="link5"/>
     <axis xyz="0 0 1"/>
-    <limit effort="100" lower="-1.2217304" upper="1.2217304" velocity="3.92"/>
+    <limit effort="100" lower="-1.2217304" upper="1.2217304" velocity="3"/>
   </joint>
   <link name="link6">
     <inertial>
@@ -186,7 +186,7 @@
     <parent link="link5"/>
     <child link="link6"/>
     <axis xyz="0 0 1"/>
-    <limit effort="100" lower="-2.0943951" upper="2.0943951" velocity="3.92"/>
+    <limit effort="100" lower="-2.0943951" upper="2.0943951" velocity="3"/>
   </joint>
   <link name="flange_link">
     <inertial>
@@ -242,7 +242,7 @@
     <parent link="gripper_base"/>
     <child link="gripper_link"/>
     <axis xyz="0 0 1"/>
-    <limit effort="10" lower="0" upper="0.1" velocity="1"/>
+    <limit effort="10" lower="0" upper="0.1" velocity="3"/>
   </joint>
   <link name="gripper_link1">
     <inertial>
@@ -268,7 +268,7 @@
     <parent link="gripper_base"/>
     <child link="gripper_link1"/>
     <axis xyz="0 0 1"/>
-    <limit effort="10" lower="0" upper="0.05" velocity="0.5"/>
+    <limit effort="10" lower="0" upper="0.05" velocity="3"/>
     <mimic joint="gripper" multiplier="0.5" offset="0.0"/>
   </joint>
   <link name="gripper_link2">
@@ -295,7 +295,7 @@
     <parent link="gripper_base"/>
     <child link="gripper_link2"/>
     <axis xyz="0 0 -1"/>
-    <limit effort="10" lower="-0.05" upper="0" velocity="0.5"/>
+    <limit effort="10" lower="-0.05" upper="0" velocity="3"/>
     <mimic joint="gripper" multiplier="-0.5" offset="0.0"/>
   </joint>
   <link name="gripper_tcp_link"/>
