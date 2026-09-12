@@ -1,6 +1,6 @@
 placo
 scipy
 websockets
-git+https://github.com/agilexrobotics/pyAgxArm.git
+git+https://github.com/agilexrobotics/piper_sdk.git
 schedule
 click
