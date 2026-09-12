@@ -1,19 +1,12 @@
 import numpy as np
 import placo
 from ischedule import run_loop, schedule
-from placo_utils.tf import tf
-from placo_utils.visualization import frame_viz, robot_frame_viz, robot_viz
-from pyAgxArm import AgxArmFactory, ArmModel, PiperFW, create_agx_arm_config
-from scipy.spatial.transform import Rotation as R
+from placo_utils.visualization import robot_frame_viz, robot_viz
 
-"""
-6axis robot reaching a given target (introduction example).
-"""
+from piper_utils import Piper
 
-# Loading the robot
 robot = placo.RobotWrapper("piper", placo.Flags.ignore_collisions)
 
-# Creating the solver
 solver = placo.KinematicsSolver(robot)
 
 solver.mask_fbase(True)
@@ -25,19 +18,12 @@ effector_task.configure("joint6", "soft", 1.0, 1.0)
 viz = robot_viz(robot)
 
 t = 0
-dt = 0.005
+dt = 1 / 200
 solver.dt = dt
 
-cfg = create_agx_arm_config(
-    robot=ArmModel.PIPER, firmeware_version=PiperFW.DEFAULT, channel="can0"
-)
+piper = Piper("can0")
 
-arm = AgxArmFactory.create_arm(cfg)
-end_effector = arm.init_effector(arm.OPTIONS.EFFECTOR.AGX_GRIPPER)
-
-arm.connect()
-
-arm.disable()
+piper.disable_torque()
 
 
 @schedule(interval=dt)
@@ -45,23 +31,25 @@ def loop():
     global t
     t += dt
 
-    ja = arm.get_joint_angles()
-    gs = end_effector.get_gripper_status()
+    q = piper.recv_q()
+    ee = piper.recv_ee()
 
-    for i in range(6):
-        robot.set_joint(f"joint{i + 1}", ja.msg[i])
+    for i, pos in enumerate(q.pos):
+        robot.set_joint(f"joint{i + 1}", pos)
 
-    robot.set_joint("gripper_joint1", gs.msg.value / 2)
-    robot.set_joint("gripper_joint2", -gs.msg.value / 2)
+    width = ee.width
+
+    robot.set_joint("gripper", width)
+
+    robot.set_joint("gripper_joint1", width / 2)
+    robot.set_joint("gripper_joint2", -width / 2)
 
     robot.update_kinematics()
 
     # Displaying the robot, effector and target
     viz.display(robot.state.q)
-    robot_frame_viz(robot, "joint6")
+    robot_frame_viz(robot, "gripper_tcp")
 
 
-joint_names = robot.joint_names()
-print(list(joint_names))
-
-run_loop()
+if __name__ == "__main__":
+    run_loop()
