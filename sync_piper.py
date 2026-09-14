@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 import placo
 from ischedule import run_loop, schedule
@@ -18,12 +20,14 @@ effector_task.configure("joint6", "soft", 1.0, 1.0)
 viz = robot_viz(robot)
 
 t = 0
-dt = 1 / 200
+dt = 1 / 120
 solver.dt = dt
 
 piper = Piper("can0")
 
-piper.disable_torque()
+piper.reset()
+
+time.sleep(1)
 
 
 @schedule(interval=dt)

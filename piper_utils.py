@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import functools
 import time
-from dataclasses import dataclass
+from dataclasses import KW_ONLY, dataclass, field
 
 import numpy as np
+import placo
 from numpy.typing import ArrayLike, NDArray
+
 from piper_sdk import C_PiperInterface_V2 as PiperBus
 
 STANDBY = 0x00
@@ -15,10 +18,24 @@ MOVE_J = 0x01
 DISABLE = 0x00
 ENABLE = 0x01
 
+CLEAR_AND_DISABLE = 0x02
+
 EMERGENCY_STOP = 0x01
 RESUME_EMERGENCY_STOP = 0x02
 DISABLE_TRAJECTORY_CONTROL = 0x00
 DISABLE_TEACH = 0x00
+
+
+def clip(x: int, min_val: int, max_val: int) -> int:
+    return min(max(x, min_val), max_val)
+
+
+class PiperError(Exception):
+    pass
+
+
+class PiperNotOpenError(PiperError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -39,24 +56,48 @@ class JointState:
     torque: NDArray[np.float64]
 
 
+def require_open(method):
+    @functools.wraps(method)
+    def _impl(self, *args, **kwargs):
+        if not self.open:
+            raise PiperNotOpenError
+
+        output = method(self, *args, **kwargs)
+        return output
+
+    return _impl
+
+
+def require_torque(method):
+    @functools.wraps(method)
+    def _impl(self, *args, **kwargs):
+        if not self.torque:
+            raise PiperError
+
+        output = method(self, *args, **kwargs)
+        return output
+
+    return _impl
+
+
 class Piper:
+    open: bool = False
+    torque: bool = False
+    speed: int = 100
+
     def __init__(self, can: str, timeout: float = 1.0):
         self.bus: PiperBus = PiperBus(can_name=can)
 
         self.bus.ConnectPort()
+        self.open = True
 
-        self.enable_control()
-
-        self.enable_arm_torque()
-        self.enable_gripper_torque()
-
-    def enable_control(self):
-        self.bus.MotionCtrl_2(CAN_CONTROL, MOVE_J)
-
+    @require_open
     def set_speed(self, speed: int = 50):
-        self.bus.MotionCtrl_2(CAN_CONTROL, MOVE_J, speed)
+        self.speed = speed
+        self.bus.MotionCtrl_2(CAN_CONTROL, MOVE_J, self.speed)
 
-    def enable_arm_torque(self, timeout: float = 1.0):
+    @require_open
+    def enable_torque(self, timeout: float = 1.0):
         self.bus.EnableArm()
 
         t0 = time.perf_counter()
@@ -67,7 +108,26 @@ class Piper:
             self.bus.EnableArm()
             time.sleep(0.1)
 
-    def disable_arm_torque(self, timeout: float = 1.0):
+        ee = self.recv_ee()
+
+        width = max(-0.1, min(ee.width, 0.1)) * 1_000_000
+        torque = max(0, min(ee.torque, 5.0)) * 1_000
+
+        while not self.bus.GetArmGripperMsgs().gripper_state.foc_status.driver_enable_status:
+            if time.perf_counter() - t0 >= timeout:
+                raise TimeoutError("timeout exceeded while trying to enable gripper")
+
+            self.bus.GripperCtrl(int(width), int(torque), ENABLE)
+            time.sleep(0.1)
+
+        self.bus.MotionCtrl_2(CAN_CONTROL, MOVE_J, self.speed)
+
+        self.torque = True
+
+    @require_open
+    def disable_torque(self, timeout: float = 1.0):
+        self.bus.MotionCtrl_2(STANDBY, MOVE_J)
+
         self.bus.DisableArm()
 
         t0 = time.perf_counter()
@@ -78,6 +138,25 @@ class Piper:
             self.bus.DisableArm()
             time.sleep(0.1)
 
+        ee = self.recv_ee()
+
+        width = max(-0.1, min(ee.width, 0.1)) * 1_000_000
+        torque = max(0, min(ee.torque, 5.0)) * 1_000
+
+        while (
+            self.bus.GetArmGripperMsgs().gripper_state.foc_status.driver_enable_status
+        ):
+            if time.perf_counter() - t0 >= timeout:
+                raise TimeoutError("timeout exceeded while trying to disable gripper")
+
+            self.bus.GripperCtrl(int(width), int(torque), DISABLE)
+            time.sleep(0.1)
+
+        self.bus.MotionCtrl_2(CAN_CONTROL, MOVE_J, self.speed)
+
+        self.torque = False
+
+    @require_open
     def recv_arm_enable_status(self) -> tuple[bool, ...]:
         msg = self.bus.GetArmLowSpdInfoMsgs()
 
@@ -93,60 +172,27 @@ class Piper:
         enable_status = tuple(motor.foc_status.driver_enable_status for motor in motors)
         return enable_status
 
-    def enable_gripper_torque(self, timeout: float = 1.0):
-        msg = self.bus.GetArmGripperMsgs()
-
-        g = msg.gripper_state
-        pos = g.grippers_angle
-        torque = g.grippers_effort
-
-        enabled = g.foc_status.driver_enable_status
-
-        t0 = time.perf_counter()
-        while not enabled:
-            if time.perf_counter() - t0 >= timeout:
-                raise TimeoutError("timeout exceeded while trying to enable gripper")
-
-            self.bus.GripperCtrl(pos, torque, ENABLE)
-            time.sleep(0.1)
-
-            msg = self.bus.GetArmGripperMsgs()
-            enabled = msg.gripper_state.foc_status.driver_enable_status
-
-    def disable_gripper_torque(self, timeout: float = 1.0):
-        msg = self.bus.GetArmGripperMsgs()
-
-        g = msg.gripper_state
-        pos = g.grippers_angle
-        torque = g.grippers_effort
-
-        enabled = g.foc_status.driver_enable_status
-
-        t0 = time.perf_counter()
-        while enabled:
-            if time.perf_counter() - t0 >= timeout:
-                raise TimeoutError("timeout exceeded while trying to disable gripper")
-
-            self.bus.GripperCtrl(pos, torque, DISABLE)
-            time.sleep(0.1)
-
-            msg = self.bus.GetArmGripperMsgs()
-            enabled = msg.gripper_state.foc_status.driver_enable_status
-
+    @require_open
     def reset(self):
         # clears any errors or e-stops or teaching modes, moves on second move command
         self.bus.MotionCtrl_1(
             RESUME_EMERGENCY_STOP, DISABLE_TRAJECTORY_CONTROL, DISABLE_TEACH
         )
 
+        self.bus.GripperCtrl(0, 0, CLEAR_AND_DISABLE)
+
+    @require_open
     def emergency_stop(self):
         # ignores move commands & disables torque
         self.bus.MotionCtrl_1(EMERGENCY_STOP)
 
+    @require_open
     def unlock(self):
         # unlocks emergency stop, moves on second move command
         self.bus.MotionCtrl_1(RESUME_EMERGENCY_STOP)
 
+    @require_torque
+    @require_open
     def send_qpos(self, qpos: ArrayLike):
         qpos = np.asarray(qpos, dtype=np.float64)
         qpos = np.rad2deg(qpos)
@@ -162,6 +208,7 @@ class Piper:
             joint_6=j[5],
         )
 
+    @require_open
     def recv_q(self) -> JointState:
         msg = self.bus.GetArmHighSpdInfoMsgs()
 
@@ -185,9 +232,12 @@ class Piper:
 
         return q
 
+    @require_torque
+    @require_open
     def send_ee(self, width: float, torque: float = 1.0):
         self.bus.GripperCtrl(int(width * 1_000_000), int(torque * 1_000), ENABLE)
 
+    @require_open
     def recv_ee(self) -> GripperState:
         msg = self.bus.GetArmGripperMsgs()
 
@@ -201,22 +251,107 @@ class Piper:
         ee = GripperState(timestamp, hz, width, torque)
         return ee
 
+    @require_open
     def close(self):
         self.bus.DisconnectPort()
+        self.open = False
+
+
+@dataclass
+class Kinematics:
+    urdf_path: str
+
+    _: KW_ONLY
+    effector_name: str = "gripper_tcp"
+    gripper_name: str = "gripper"
+    dt: float = 0.008
+    pos_weight: float = 1.0
+    rot_weight: float = 1e-3
+    gripper_max: float = 0.1
+
+    robot: placo.RobotWrapper = field(init=False)
+    solver: placo.KinematicsSolver = field(init=False)
+
+    effector_task: placo.FrameTask = field(init=False)
+    gripper_task: placo.JointsTask = field(init=False)
+
+    def __post_init__(self):
+        self.robot = robot = placo.RobotWrapper(self.urdf_path)
+
+        self.solver = solver = placo.KinematicsSolver(robot)
+
+        solver.dt = self.dt
+
+        solver.mask_fbase(True)
+        solver.enable_velocity_limits(True)
+        solver.enable_joint_limits(True)
+
+        gear_task = solver.add_gear_task()
+        gear_task.configure("gear", "hard")
+
+        gear_task.set_gear("gripper_joint1", "gripper", 0.5)
+        gear_task.set_gear("gripper_joint2", "gripper", -0.5)
+
+        self.effector_task = effector_task = solver.add_frame_task(
+            self.effector_name, np.eye(4)
+        )
+        effector_task.configure(
+            self.effector_name, "soft", self.pos_weight, self.rot_weight
+        )
+
+        self.gripper_task = gripper_task = solver.add_joints_task()
+        gripper_task.configure(self.gripper_name, "soft", 1.0)
+
+        effector_task.T_world_frame = solver.robot.get_T_world_frame(self.effector_name)
+        gripper_task.set_joint(self.gripper_name, 0)
+
+        regularization_task = solver.add_regularization_task(1e-4)
+
+    def set_joints(self, joints):
+        for i, joint in enumerate(joints):
+            self.solver.robot.set_joint(f"joint{i + 1}", joint)
+
+        self.robot.update_kinematics()
+
+    def get_joints(self):
+        joints = [self.robot.get_joint(f"joint{i + 1}") for i in range(6)]
+        return joints
+
+    def set_gripper(self, meters: float):
+        self.robot.set_joint("gripper", meters)
+        self.robot.set_joint("gripper_joint1", meters / 2)
+        self.robot.set_joint("gripper_joint2", -meters / 2)
+
+        self.robot.update_kinematics()
+
+    def get_gripper(self):
+        gripper = self.robot.get_joint(self.gripper_name)
+        return gripper
+
+    def forward(self):
+        return self.robot.get_T_world_frame(self.effector_name)
+
+    def inverse(self, frame, gripper: float):
+        self.effector_task.T_world_frame = frame
+        self.gripper_task.set_joint(self.gripper_name, gripper)
+
+        self.solver.solve(True)
+        self.robot.update_kinematics()
 
 
 if __name__ == "__main__":
     piper = Piper("can0")
 
-    q = piper.recv_q()
-    ee = piper.recv_ee()
+    piper.disable_torque()
 
     time.sleep(1)
 
-    piper.send_qpos(q.pos)
-    piper.send_ee(ee.width, ee.torque)
+    input("alsfjaklsdfjlkajsdlfkajsdk")
+
+    piper.enable_torque()
 
     time.sleep(1)
 
-    piper.send_qpos([0] * 6)
-    piper.send_ee(0, 1)
+    piper.emergency_stop()
+
+    time.sleep(1)
