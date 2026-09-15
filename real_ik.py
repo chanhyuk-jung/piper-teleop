@@ -23,8 +23,8 @@ piper.enable_torque()
 
 time.sleep(1)
 
-k.set_joints([0] * 6)
-k.set_gripper(0)
+k.set_qpos([0] * 6)
+k.set_ee(0)
 
 piper.send_qpos([0] * 6)
 piper.send_ee(0)
@@ -57,7 +57,7 @@ def loop():
 
     k.inverse(m, 0.0)
 
-    qpos = k.get_joints()
+    qpos = k.get_qpos()
     piper.send_qpos(qpos)
     piper.send_ee(0)
 

@@ -266,19 +266,19 @@ class Kinematics:
     gripper_name: str = "gripper"
     dt: float = 0.008
     pos_weight: float = 1.0
-    rot_weight: float = 1e-3
+    rot_weight: float = 5e-2
     gripper_max: float = 0.1
 
     robot: placo.RobotWrapper = field(init=False)
-    solver: placo.KinematicsSolver = field(init=False)
+    solver: placo.DynamicsSolver = field(init=False)
 
-    effector_task: placo.FrameTask = field(init=False)
-    gripper_task: placo.JointsTask = field(init=False)
+    effector_task: placo.DynamicsFrameTask = field(init=False)
+    gripper_task: placo.DynamicsJointsTask = field(init=False)
 
     def __post_init__(self):
         self.robot = robot = placo.RobotWrapper(self.urdf_path)
 
-        self.solver = solver = placo.KinematicsSolver(robot)
+        self.solver = solver = placo.DynamicsSolver(robot)
 
         solver.dt = self.dt
 
@@ -305,35 +305,39 @@ class Kinematics:
         effector_task.T_world_frame = solver.robot.get_T_world_frame(self.effector_name)
         gripper_task.set_joint(self.gripper_name, 0)
 
-        regularization_task = solver.add_regularization_task(1e-4)
+        posture = solver.add_joints_task()
+        posture.set_joints({f"joint{i + 1}": 0.0 for i in range(6)})
+        posture.configure("posture", "soft", 1e-3)
 
-    def set_joints(self, joints):
+    def set_qpos(self, joints):
         for i, joint in enumerate(joints):
             self.solver.robot.set_joint(f"joint{i + 1}", joint)
 
         self.robot.update_kinematics()
 
-    def get_joints(self):
+    def get_qpos(self):
         joints = [self.robot.get_joint(f"joint{i + 1}") for i in range(6)]
         return joints
 
-    def set_gripper(self, meters: float):
+    def set_ee(self, meters: float):
         self.robot.set_joint("gripper", meters)
         self.robot.set_joint("gripper_joint1", meters / 2)
         self.robot.set_joint("gripper_joint2", -meters / 2)
 
         self.robot.update_kinematics()
 
-    def get_gripper(self):
+    def get_ee(self):
         gripper = self.robot.get_joint(self.gripper_name)
         return gripper
 
     def forward(self):
         return self.robot.get_T_world_frame(self.effector_name)
 
-    def inverse(self, frame, gripper: float):
+    def inverse(self, frame, dpos, gripper: float, dgripper:float):
         self.effector_task.T_world_frame = frame
-        self.gripper_task.set_joint(self.gripper_name, gripper)
+        self.effector_task.position().dtarget_world = dpos
+
+        self.gripper_task.set_joint(self.gripper_name, gripper, dgripper )
 
         self.solver.solve(True)
         self.robot.update_kinematics()
