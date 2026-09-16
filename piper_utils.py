@@ -7,7 +7,6 @@ from dataclasses import KW_ONLY, dataclass, field
 import numpy as np
 import placo
 from numpy.typing import ArrayLike, NDArray
-
 from piper_sdk import C_PiperInterface_V2 as PiperBus
 
 STANDBY = 0x00
@@ -35,6 +34,10 @@ class PiperError(Exception):
 
 
 class PiperNotOpenError(PiperError):
+    pass
+
+
+class PiperNotEnabledError(PiperError):
     pass
 
 
@@ -72,7 +75,7 @@ def require_torque(method):
     @functools.wraps(method)
     def _impl(self, *args, **kwargs):
         if not self.torque:
-            raise PiperError
+            raise PiperNotEnabledError
 
         output = method(self, *args, **kwargs)
         return output
@@ -191,8 +194,8 @@ class Piper:
         # unlocks emergency stop, moves on second move command
         self.bus.MotionCtrl_1(RESUME_EMERGENCY_STOP)
 
-    @require_torque
     @require_open
+    @require_torque
     def send_qpos(self, qpos: ArrayLike):
         qpos = np.asarray(qpos, dtype=np.float64)
         qpos = np.rad2deg(qpos)
@@ -232,8 +235,8 @@ class Piper:
 
         return q
 
-    @require_torque
     @require_open
+    @require_torque
     def send_ee(self, width: float, torque: float = 1.0):
         self.bus.GripperCtrl(int(width * 1_000_000), int(torque * 1_000), ENABLE)
 
