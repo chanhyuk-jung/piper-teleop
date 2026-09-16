@@ -5,23 +5,18 @@ from placo_utils.tf import tf
 from placo_utils.visualization import frame_viz, robot_frame_viz, robot_viz
 from scipy.spatial.transform import Rotation as R
 
-# Loading the robot
-robot = placo.RobotWrapper("piper", placo.Flags.ignore_collisions)
+from piper_utils import Kinematics
 
-# Creating the solver
-solver = placo.KinematicsSolver(robot)
+k = Kinematics("piper")
 
-solver.mask_fbase(True)
-solver.enable_velocity_limits(True)
+k.set_qpos([0] * 6)
+k.set_ee(0)
 
-effector_task = solver.add_frame_task("gripper_tcp", np.eye(4))
-effector_task.configure("gripper_tcp", "soft", 1.0, 0.01)
-
-viz = robot_viz(robot)
+viz = robot_viz(k.robot)
 
 t = 0
 dt = 0.01
-solver.dt = dt
+k.dt = dt
 
 
 @schedule(interval=dt)
@@ -30,20 +25,23 @@ def loop():
     t += dt
 
     m = tf.translation_matrix([0.4, 0.2 * np.sin(t), 0.2])
+    vel = np.array([0, 0.2 * np.cos(t), 0])
 
     rotation = R.from_euler("xyz", [0, -180, 0], degrees=True)
     m[:3, :3] = rotation.as_matrix()
 
-    effector_task.T_world_frame = m
+    k.inverse(m, vel, 1e-3, 1e-3)
 
-    # Solving the IK
-    solver.solve(True)
-    robot.update_kinematics()
+    print(
+        k.get_ee(),
+        k.robot.get_joint("gripper_joint1"),
+        k.robot.get_joint("gripper_joint1"),
+    )
 
     # Displaying the robot, effector and target
-    viz.display(robot.state.q)
-    robot_frame_viz(robot, "gripper_tcp")
-    frame_viz("target", effector_task.T_world_frame)
+    viz.display(k.robot.state.q)
+    robot_frame_viz(k.robot, k.effector_name)
+    frame_viz("target", k.effector_task.T_world_frame)
 
 
 run_loop()

@@ -14,13 +14,8 @@ from websockets.asyncio.server import ServerConnection, serve
 
 from piper_utils import Kinematics, Piper
 
-max_d = 0.01 * 1000
-max_rot = 0.2 * 1000
-ALPHA = 0.5
-
-
 k = Kinematics("piper")
-k.dt = 0.008
+k.dt = 0.005
 
 viz = robot_viz(k.robot)
 
@@ -43,8 +38,6 @@ frame_viz("target", k.effector_task.T_world_frame)
 
 goal_q = Queue(maxsize=-1)
 
-data_q = Queue(maxsize=-1)
-
 
 @schedule(interval=k.dt)
 def ik_loop():
@@ -53,18 +46,12 @@ def ik_loop():
 
     goal = goal_q.get()
 
-    k.inverse(goal["frame"], goal["dframe"], goal["gripper"], goal["dgripper"])
+    k.inverse(
+        goal["frame"], goal["gripper"], vel=goal["vel"], ee_vel=goal["gripper_vel"]
+    )
 
     joints = k.get_qpos()
     gripper = k.get_ee()
-
-    q = piper.recv_q()
-    ee = piper.recv_ee()
-
-    state = {"q": q, "ee": ee}
-    action = {"qpos": joints, "width": gripper}
-
-    data_q.put((action, state))
 
     piper.send_qpos(joints)
     piper.send_ee(gripper, 1.0)
@@ -116,39 +103,31 @@ async def handler(websocket: ServerConnection):
             delta_pos = m[:3, -1] - anchor_m[:3, -1]
             m[:3, -1] = delta_pos + robot_m[:3, -1]
 
-            dis = m[:3, -1] - prev_m[:3, -1]
-            mag = np.linalg.norm(dis)
-
-            if mag > max_d:
-                m[:3, -1] = dis / (mag + 1e-8) * max_d + prev_m[:3, -1]
-
             delta_rot = R.from_matrix(anchor_m[:3, :3]).inv() * R.from_matrix(m[:3, :3])
             m_rot = R.from_matrix(robot_m[:3, :3]) * delta_rot
 
-            prev_rot = R.from_matrix(prev_m[:3, :3])
-            delta_rot = prev_rot.inv() * m_rot
-
-            mag = delta_rot.magnitude()
-            if mag > max_rot:
-                scale = float(max_rot / mag)
-                m_rot = prev_rot * (delta_rot**scale)
-
             m[:3, :3] = m_rot.as_matrix()
 
-            # interpolate frames
             times = np.linspace(0, 1, num=int(msg["delta"] / k.dt))
 
             gripper = payload["gripper"] ** (1 / 2) * k.gripper_max
 
             target_vel = (m[:3, -1] - prev_m[:3, -1]) / msg["delta"]
+            target_gripper_vel = (gripper - prev_gripper) / msg["delta"]
 
             for t in times:
                 target_m = placo.interpolate_frames(prev_m, m, t)
 
                 target_gripper = (gripper - prev_gripper) * t + prev_gripper
-                target_gripper_vel = (gripper - prev_gripper) / msg["delta"]
 
-                goal_q.put({"frame": target_m, "dframe": target_vel, "gripper": target_gripper, "dgripper": target_gripper_vel})
+                goal_q.put(
+                    {
+                        "frame": target_m,
+                        "vel": target_vel,
+                        "gripper": target_gripper,
+                        "gripper_vel": target_gripper_vel,
+                    }
+                )
 
             prev_m = m.copy()
             prev_gripper = gripper

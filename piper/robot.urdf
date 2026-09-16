@@ -242,7 +242,7 @@
     <parent link="gripper_base"/>
     <child link="gripper_link"/>
     <axis xyz="0 0 1"/>
-    <limit effort="10" lower="0" upper="0.1" velocity="3"/>
+    <limit effort="10" lower="0" upper="0.1" velocity="1"/>
   </joint>
   <link name="gripper_link1">
     <inertial>
@@ -268,7 +268,7 @@
     <parent link="gripper_base"/>
     <child link="gripper_link1"/>
     <axis xyz="0 0 1"/>
-    <limit effort="10" lower="0" upper="0.05" velocity="3"/>
+    <limit effort="10" lower="0" upper="0.05" velocity="0.5"/>
     <mimic joint="gripper" multiplier="0.5" offset="0.0"/>
   </joint>
   <link name="gripper_link2">
@@ -295,7 +295,7 @@
     <parent link="gripper_base"/>
     <child link="gripper_link2"/>
     <axis xyz="0 0 -1"/>
-    <limit effort="10" lower="-0.05" upper="0" velocity="3"/>
+    <limit effort="10" lower="-0.05" upper="0" velocity="0.5"/>
     <mimic joint="gripper" multiplier="-0.5" offset="0.0"/>
   </joint>
   <link name="gripper_tcp_link"/>

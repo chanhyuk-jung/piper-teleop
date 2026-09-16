@@ -46,14 +46,18 @@ export class RobotSystem extends createSystem(
       payload: {},
     };
 
+    const squeezed = pad.getButtonPressed("xr-standard-squeeze");
+
+    if (this.coupled && squeezed) {
+      msg["type"] = "move";
+    } else {
+      this.coupled = false;
+      msg["type"] = "stop";
+    }
+
     if (pad.getButtonDown("xr-standard-squeeze")) {
       this.coupled = true;
       msg["type"] = "start";
-    } else if (this.coupled && pad.getButtonPressed("xr-standard-squeeze")) {
-      msg["type"] = "move";
-    } else if (this.coupled) {
-      this.coupled = false;
-      msg["type"] = "stop";
     }
 
     if (pad.getButtonDown("a-button")) {

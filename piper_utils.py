@@ -266,7 +266,7 @@ class Kinematics:
     gripper_name: str = "gripper"
     dt: float = 0.008
     pos_weight: float = 1.0
-    rot_weight: float = 5e-2
+    rot_weight: float = 5e-3
     gripper_max: float = 0.1
 
     robot: placo.RobotWrapper = field(init=False)
@@ -282,15 +282,15 @@ class Kinematics:
 
         solver.dt = self.dt
 
-        solver.mask_fbase(True)
-        solver.enable_velocity_limits(True)
         solver.enable_joint_limits(True)
+        solver.enable_velocity_limits(True)
 
-        gear_task = solver.add_gear_task()
-        gear_task.configure("gear", "hard")
+        solver.mask_fbase(True)
 
-        gear_task.set_gear("gripper_joint1", "gripper", 0.5)
-        gear_task.set_gear("gripper_joint2", "gripper", -0.5)
+        gears = solver.add_gear_task()
+        gears.add_gear("gripper_joint1", "gripper", 0.5)
+        gears.add_gear("gripper_joint2", "gripper", -0.5)
+        gears.configure("gear", "hard")
 
         self.effector_task = effector_task = solver.add_frame_task(
             self.effector_name, np.eye(4)
@@ -298,6 +298,7 @@ class Kinematics:
         effector_task.configure(
             self.effector_name, "soft", self.pos_weight, self.rot_weight
         )
+        effector_task.position().kp
 
         self.gripper_task = gripper_task = solver.add_joints_task()
         gripper_task.configure(self.gripper_name, "soft", 1.0)
@@ -307,11 +308,11 @@ class Kinematics:
 
         posture = solver.add_joints_task()
         posture.set_joints({f"joint{i + 1}": 0.0 for i in range(6)})
-        posture.configure("posture", "soft", 1e-3)
+        posture.configure("posture", "soft", 1e-4)
 
     def set_qpos(self, joints):
         for i, joint in enumerate(joints):
-            self.solver.robot.set_joint(f"joint{i + 1}", joint)
+            self.robot.set_joint(f"joint{i + 1}", joint)
 
         self.robot.update_kinematics()
 
@@ -333,29 +334,12 @@ class Kinematics:
     def forward(self):
         return self.robot.get_T_world_frame(self.effector_name)
 
-    def inverse(self, frame, dpos, gripper: float, dgripper:float):
+    def inverse(self, frame, gripper: float, *, vel=None, ee_vel: float = 0):
         self.effector_task.T_world_frame = frame
-        self.effector_task.position().dtarget_world = dpos
+        if vel is not None:
+            self.effector_task.position().dtarget_world = vel
 
-        self.gripper_task.set_joint(self.gripper_name, gripper, dgripper )
+        self.gripper_task.set_joint(self.gripper_name, gripper, ee_vel)
 
         self.solver.solve(True)
         self.robot.update_kinematics()
-
-
-if __name__ == "__main__":
-    piper = Piper("can0")
-
-    piper.disable_torque()
-
-    time.sleep(1)
-
-    input("alsfjaklsdfjlkajsdlfkajsdk")
-
-    piper.enable_torque()
-
-    time.sleep(1)
-
-    piper.emergency_stop()
-
-    time.sleep(1)
