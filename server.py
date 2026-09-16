@@ -14,10 +14,7 @@ from websockets.asyncio.server import ServerConnection, serve
 
 from piper_utils import Kinematics, Piper
 
-k = Kinematics("piper")
-k.dt = 0.005
-
-viz = robot_viz(k.robot)
+alpha = 0.4
 
 piper = Piper("can0")
 
@@ -31,6 +28,11 @@ piper.send_ee(0, 0)
 time.sleep(4)
 
 q_pos_zero = piper.recv_q().pos
+
+k = Kinematics("piper")
+k.dt = 0.005
+
+viz = robot_viz(k.robot)
 
 viz.display(k.robot.state.q)
 robot_frame_viz(k.robot, k.effector_name)
@@ -76,6 +78,8 @@ async def handler(websocket: ServerConnection):
     prev_m = np.eye(4)
     prev_gripper = 0
 
+    ema_m = prev_m[:3, -1].copy()
+
     async for message in websocket:
         msg = json.loads(message)
 
@@ -95,6 +99,8 @@ async def handler(websocket: ServerConnection):
             prev_m = robot_m.copy()
             prev_gripper = k.get_ee()
 
+            ema_m = prev_m[:3, -1].copy()
+
         elif msg["type"] == "move":
             payload = msg["payload"]
 
@@ -107,6 +113,10 @@ async def handler(websocket: ServerConnection):
             m_rot = R.from_matrix(robot_m[:3, :3]) * delta_rot
 
             m[:3, :3] = m_rot.as_matrix()
+
+            ema_m = m[:3, -1] * alpha + ema_m * (1 - alpha)
+
+            m[:3, -1] = ema_m
 
             times = np.linspace(0, 1, num=int(msg["delta"] / k.dt))
 

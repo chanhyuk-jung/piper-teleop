@@ -30,15 +30,8 @@ def loop():
     rotation = R.from_euler("xyz", [0, -180, 0], degrees=True)
     m[:3, :3] = rotation.as_matrix()
 
-    k.inverse(m, vel, 1e-3, 1e-3)
+    k.inverse(m, 0, vel=vel)
 
-    print(
-        k.get_ee(),
-        k.robot.get_joint("gripper_joint1"),
-        k.robot.get_joint("gripper_joint1"),
-    )
-
-    # Displaying the robot, effector and target
     viz.display(k.robot.state.q)
     robot_frame_viz(k.robot, k.effector_name)
     frame_viz("target", k.effector_task.T_world_frame)
