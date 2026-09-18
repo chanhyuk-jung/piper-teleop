@@ -3,6 +3,7 @@ from __future__ import annotations
 import functools
 import time
 from dataclasses import KW_ONLY, dataclass, field
+from typing import Literal
 
 import numpy as np
 import placo
@@ -94,10 +95,32 @@ class Piper:
         self.bus.ConnectPort()
         self.open = True
 
+        time.sleep(0.1)
+
+        self.torque = self.is_enabled()
+
+    def is_enabled(self):
+        q_torque = all(self.recv_arm_enable_status())
+        ee_torque = (
+            self.bus.GetArmGripperMsgs().gripper_state.foc_status.driver_enable_status
+        )
+
+        return q_torque and ee_torque
+
     @require_open
-    def set_speed(self, speed: int = 50):
+    def set_vel(self, speed: int = 100):
         self.speed = speed
         self.bus.MotionCtrl_2(CAN_CONTROL, MOVE_J, self.speed)
+
+    @require_open
+    def set_max_vel(self, motor_num: Literal[1, 2, 3, 4, 5, 6], speed: float = 3.0):
+        self.bus.MotorAngleLimitMaxSpdSet(motor_num, max_joint_spd=int(speed * 1000))
+
+    @require_open
+    def set_max_acc(self, motor_num: Literal[1, 2, 3, 4, 5, 6], acc: float = 5.0):
+        self.bus.JointConfig(
+            motor_num, acc_param_is_effective=0xAE, max_joint_acc=int(acc * 100)
+        )
 
     @require_open
     def enable_torque(self, timeout: float = 1.0):
@@ -113,7 +136,7 @@ class Piper:
 
         ee = self.recv_ee()
 
-        width = max(-0.1, min(ee.width, 0.1)) * 1_000_000
+        width = max(0.0, min(ee.width, 0.1)) * 1_000_000
         torque = max(0, min(ee.torque, 5.0)) * 1_000
 
         while not self.bus.GetArmGripperMsgs().gripper_state.foc_status.driver_enable_status:
@@ -129,8 +152,6 @@ class Piper:
 
     @require_open
     def disable_torque(self, timeout: float = 1.0):
-        self.bus.MotionCtrl_2(STANDBY, MOVE_J)
-
         self.bus.DisableArm()
 
         t0 = time.perf_counter()
@@ -155,7 +176,7 @@ class Piper:
             self.bus.GripperCtrl(int(width), int(torque), DISABLE)
             time.sleep(0.1)
 
-        self.bus.MotionCtrl_2(CAN_CONTROL, MOVE_J, self.speed)
+        self.bus.MotionCtrl_2(STANDBY, MOVE_J, self.speed)
 
         self.torque = False
 
@@ -176,8 +197,15 @@ class Piper:
         return enable_status
 
     @require_open
+    def clear_errors(self, joint_num: Literal[1, 2, 3, 4, 5, 6]):
+        self.bus.JointConfig(joint_num, clear_err=0xAE)
+
+    @require_open
+    def set_zero(self, joint_num: Literal[1, 2, 3, 4, 5, 6]):
+        self.bus.JointConfig(joint_num, set_zero=0xAE)
+
+    @require_open
     def reset(self):
-        # clears any errors or e-stops or teaching modes, moves on second move command
         self.bus.MotionCtrl_1(
             RESUME_EMERGENCY_STOP, DISABLE_TRAJECTORY_CONTROL, DISABLE_TEACH
         )
@@ -186,12 +214,10 @@ class Piper:
 
     @require_open
     def emergency_stop(self):
-        # ignores move commands & disables torque
         self.bus.MotionCtrl_1(EMERGENCY_STOP)
 
     @require_open
     def unlock(self):
-        # unlocks emergency stop, moves on second move command
         self.bus.MotionCtrl_1(RESUME_EMERGENCY_STOP)
 
     @require_open
@@ -200,7 +226,7 @@ class Piper:
         qpos = np.asarray(qpos, dtype=np.float64)
         qpos = np.rad2deg(qpos)
 
-        j: tuple[int, ...] = tuple((qpos * 1000).astype(np.int32))
+        j: tuple[int, ...] = tuple((qpos * 1_000).astype(np.int32))
 
         self.bus.JointCtrl(
             joint_1=j[0],
@@ -314,25 +340,21 @@ class Kinematics:
         posture.configure("posture", "soft", 1e-4)
 
     def set_qpos(self, joints):
-        for i, joint in enumerate(joints):
+        for i, joint in enumerate(joints[:-1]):
             self.robot.set_joint(f"joint{i + 1}", joint)
+
+        width = joints[-1]
+
+        self.robot.set_joint("gripper", width)
+        self.robot.set_joint("gripper_joint1", width / 2)
+        self.robot.set_joint("gripper_joint2", -width / 2)
 
         self.robot.update_kinematics()
 
     def get_qpos(self):
         joints = [self.robot.get_joint(f"joint{i + 1}") for i in range(6)]
+        joints.append(self.robot.get_joint(self.gripper_name))
         return joints
-
-    def set_ee(self, meters: float):
-        self.robot.set_joint("gripper", meters)
-        self.robot.set_joint("gripper_joint1", meters / 2)
-        self.robot.set_joint("gripper_joint2", -meters / 2)
-
-        self.robot.update_kinematics()
-
-    def get_ee(self):
-        gripper = self.robot.get_joint(self.gripper_name)
-        return gripper
 
     def forward(self):
         return self.robot.get_T_world_frame(self.effector_name)

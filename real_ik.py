@@ -6,28 +6,28 @@ from placo_utils.tf import tf
 from placo_utils.visualization import frame_viz, robot_frame_viz, robot_viz
 from scipy.spatial.transform import Rotation as R
 
-from piper_utils import Kinematics, Piper
+from piper_utils import Kinematics
+from proto_driver import Piper
 
 k = Kinematics("piper")
 
 viz = robot_viz(k.robot)
 
 t = 0
-dt = 0.008
+dt = 0.005
 
 k.dt = dt
 
 piper = Piper("can0")
 
+time.sleep(1)
+
 piper.enable_torque()
 
 time.sleep(1)
 
-k.set_qpos([0] * 6)
-k.set_ee(0)
-
-piper.send_qpos([0] * 6)
-piper.send_ee(0)
+piper.send_qpos([0] * 7)
+k.set_qpos([0] * 7)
 
 time.sleep(4)
 
@@ -59,10 +59,9 @@ def loop():
 
     qpos = k.get_qpos()
     piper.send_qpos(qpos)
-    piper.send_ee(0)
 
     viz.display(k.robot.state.q)
-    robot_frame_viz(k.robot, "gripper_tcp")
+    robot_frame_viz(k.robot, k.gripper_name)
     frame_viz("target", k.effector_task.T_world_frame)
 
 

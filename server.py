@@ -12,22 +12,25 @@ from placo_utils.visualization import frame_viz, robot_frame_viz, robot_viz
 from scipy.spatial.transform import Rotation as R
 from websockets.asyncio.server import ServerConnection, serve
 
-from piper_utils import Kinematics, Piper
+from piper_utils import Kinematics
+from proto_driver import Piper
 
 alpha = 0.4
 
 piper = Piper("can0")
 
+time.sleep(1)
+
 piper.enable_torque()
 
 time.sleep(1)
 
-piper.send_qpos([0] * 6)
-piper.send_ee(0, 0)
+piper.send_qpos([0] * 7)
 
 time.sleep(4)
 
-q_pos_zero = piper.recv_q().pos
+q = piper.recv_q()
+q_pos_zero = np.array(q.pos)
 
 k = Kinematics("piper")
 k.dt = 0.005
@@ -52,11 +55,9 @@ def ik_loop():
         goal["frame"], goal["gripper"], vel=goal["vel"], ee_vel=goal["gripper_vel"]
     )
 
-    joints = k.get_qpos()
-    gripper = k.get_ee()
+    qpos = k.get_qpos()
 
-    piper.send_qpos(joints)
-    piper.send_ee(gripper, 1.0)
+    piper.send_qpos(qpos)
 
 
 def vr_to_flange(pos, quat):
@@ -85,10 +86,8 @@ async def handler(websocket: ServerConnection):
 
         if msg["type"] == "start":
             q = piper.recv_q()
-            ee = piper.recv_ee()
 
-            k.set_qpos(q.pos - q_pos_zero)
-            k.set_ee(ee.width)
+            k.set_qpos(np.array(q.pos) - q_pos_zero)
 
             robot_m = k.forward()
 
@@ -97,7 +96,7 @@ async def handler(websocket: ServerConnection):
 
             anchor_m = m.copy()
             prev_m = robot_m.copy()
-            prev_gripper = k.get_ee()
+            prev_gripper = q.pos[-1]
 
             ema_m = prev_m[:3, -1].copy()
 
@@ -150,11 +149,9 @@ async def handler(websocket: ServerConnection):
             with goal_q.mutex:
                 goal_q.queue.clear()
 
-            piper.send_qpos([0] * 6)
-            piper.send_ee(0, 0)
+            piper.send_qpos([0] * 7)
 
-            k.set_qpos([0] * 6)
-            k.set_ee(0)
+            k.set_qpos([0] * 7)
 
         viz.display(k.robot.state.q)
         robot_frame_viz(k.robot, k.effector_name)
