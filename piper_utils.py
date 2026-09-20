@@ -327,7 +327,6 @@ class Kinematics:
         effector_task.configure(
             self.effector_name, "soft", self.pos_weight, self.rot_weight
         )
-        effector_task.position().kp
 
         self.gripper_task = gripper_task = solver.add_joints_task()
         gripper_task.configure(self.gripper_name, "soft", 1.0)

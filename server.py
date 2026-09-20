@@ -117,7 +117,7 @@ async def handler(websocket: ServerConnection):
 
             m[:3, -1] = ema_m
 
-            times = np.linspace(0, 1, num=int(msg["delta"] / k.dt))
+            times = np.linspace(0, 1, int(msg["delta"] / k.dt))[1:]
 
             gripper = payload["gripper"] ** (1 / 2) * k.gripper_max
 
@@ -127,7 +127,9 @@ async def handler(websocket: ServerConnection):
             for t in times:
                 target_m = placo.interpolate_frames(prev_m, m, t)
 
-                target_gripper = (gripper - prev_gripper) * t + prev_gripper
+                target_gripper = (gripper - prev_gripper) / msg[
+                    "delta"
+                ] * t + prev_gripper
 
                 goal_q.put(
                     {
