@@ -6,8 +6,7 @@ from placo_utils.tf import tf
 from placo_utils.visualization import frame_viz, robot_frame_viz, robot_viz
 from scipy.spatial.transform import Rotation as R
 
-from piper_utils import Kinematics
-from proto_driver import Piper
+from piper_utils import Kinematics, RealPiper
 
 k = Kinematics("piper")
 
@@ -18,7 +17,7 @@ dt = 0.005
 
 k.dt = dt
 
-piper = Piper("can0")
+piper = RealPiper("can0")
 
 time.sleep(1)
 
@@ -52,8 +51,6 @@ def loop():
 
     rotation = R.from_euler("xyz", [0, -180, 0], degrees=True)
     m[:3, :3] = rotation.as_matrix()
-
-    k.effector_task.T_world_frame = m
 
     k.inverse(m, 0.0)
 

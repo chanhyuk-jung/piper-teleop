@@ -1,5 +1,4 @@
 import numpy as np
-import placo
 from ischedule import run_loop, schedule
 from placo_utils.tf import tf
 from placo_utils.visualization import frame_viz, robot_frame_viz, robot_viz
@@ -9,8 +8,7 @@ from piper_utils import Kinematics
 
 k = Kinematics("piper")
 
-k.set_qpos([0] * 6)
-k.set_ee(0)
+k.set_qpos([0] * 7)
 
 viz = robot_viz(k.robot)
 

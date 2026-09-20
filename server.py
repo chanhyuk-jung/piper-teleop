@@ -8,16 +8,12 @@ import click
 import numpy as np
 import placo
 from ischedule import run_loop, schedule
-from placo_utils.visualization import frame_viz, robot_frame_viz, robot_viz
 from scipy.spatial.transform import Rotation as R
 from websockets.asyncio.server import ServerConnection, serve
 
-from piper_utils import Kinematics
-from proto_driver import Piper
+from piper_utils import Kinematics, RealPiper
 
-alpha = 0.4
-
-piper = Piper("can0")
+piper = RealPiper("can0")
 
 time.sleep(1)
 
@@ -35,12 +31,6 @@ q_pos_zero = np.array(q.pos)
 k = Kinematics("piper")
 k.dt = 0.005
 
-viz = robot_viz(k.robot)
-
-viz.display(k.robot.state.q)
-robot_frame_viz(k.robot, k.effector_name)
-frame_viz("target", k.effector_task.T_world_frame)
-
 goal_q = Queue(maxsize=-1)
 
 
@@ -55,9 +45,7 @@ def ik_loop():
         goal["frame"], goal["gripper"], vel=goal["vel"], ee_vel=goal["gripper_vel"]
     )
 
-    qpos = k.get_qpos()
-
-    piper.send_qpos(qpos)
+    piper.send_qpos(k.get_qpos())
 
 
 def vr_to_flange(pos, quat):
@@ -70,6 +58,9 @@ def vr_to_flange(pos, quat):
     m[:3, :3] = A.T @ R.from_quat(quat).as_matrix() @ A
 
     return m
+
+
+alpha = 0.4
 
 
 async def handler(websocket: ServerConnection):
@@ -106,10 +97,10 @@ async def handler(websocket: ServerConnection):
             m = vr_to_flange(payload["position"], payload["quaternion"])
 
             delta_pos = m[:3, -1] - anchor_m[:3, -1]
-            m[:3, -1] = delta_pos + robot_m[:3, -1]
+            m[:3, -1] = delta_pos * 1.5 + robot_m[:3, -1]
 
             delta_rot = R.from_matrix(anchor_m[:3, :3]).inv() * R.from_matrix(m[:3, :3])
-            m_rot = R.from_matrix(robot_m[:3, :3]) * delta_rot
+            m_rot = R.from_matrix(robot_m[:3, :3]) * (delta_rot**1.5)
 
             m[:3, :3] = m_rot.as_matrix()
 
@@ -155,12 +146,8 @@ async def handler(websocket: ServerConnection):
 
             k.set_qpos([0] * 7)
 
-        viz.display(k.robot.state.q)
-        robot_frame_viz(k.robot, k.effector_name)
-        frame_viz("target", k.effector_task.T_world_frame)
 
-
-async def async_serve(port):
+async def async_serve(port: int):
     server = await serve(handler, host="0.0.0.0", port=port)
     print(f"websocket server running at http://127.0.0.1:{port}")
 
@@ -169,10 +156,8 @@ async def async_serve(port):
 
 @click.command()
 @click.option("--port", default=65432, help="port to run server on")
-def main(port):
-    stop_event = threading.Event()
-
-    t = threading.Thread(target=run_loop, args=(stop_event,), daemon=True)
+def main(port: int):
+    t = threading.Thread(target=run_loop, daemon=True)
     t.start()
 
     asyncio.run(async_serve(port))

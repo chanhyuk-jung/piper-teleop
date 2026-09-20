@@ -3,8 +3,7 @@ import time
 from ischedule import run_loop, schedule
 from placo_utils.visualization import robot_frame_viz, robot_viz
 
-from piper_utils import Kinematics
-from proto_driver import Piper
+from piper_utils import Kinematics, RealPiper
 
 k = Kinematics("piper")
 
@@ -12,7 +11,7 @@ viz = robot_viz(k.robot)
 
 dt = 1 / 120
 
-piper = Piper("can0")
+piper = RealPiper("can0")
 
 time.sleep(1)
 
