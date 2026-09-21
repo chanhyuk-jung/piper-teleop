@@ -1,19 +1,39 @@
 from __future__ import annotations
 
+import queue
+import threading
 import time
 from dataclasses import dataclass
 from functools import wraps
+from queue import Queue
 
 import numpy as np
 import placo
+from ischedule import run_loop, schedule
 from numpy.typing import ArrayLike
+from pyAgxArm.protocols.can_protocol.drivers import AgxGripperDriverDefault
+from pyAgxArm.protocols.can_protocol.drivers.piper.default.driver import Driver
+from pyAgxArm.protocols.can_protocol.msgs.core import MessageAbstract
+from pyAgxArm.protocols.can_protocol.msgs.piper.default import ArmMsgFeedbackHighSpd
+from scipy.spatial.transform import Rotation as R
+
 from pyAgxArm import (
     AgxArmFactory,
     ArmModel,
     create_agx_arm_config,
 )
-from pyAgxArm.protocols.can_protocol.msgs.core import MessageAbstract
-from pyAgxArm.protocols.can_protocol.msgs.piper.default import ArmMsgFeedbackHighSpd
+
+
+def vr_to_flange(pos, quat):
+    m = np.eye(4)
+
+    x, y, z = pos
+    m[:3, -1] = np.array([-z, -x, y])
+
+    A = np.array([[0, -1, 0], [-1, 0, 0], [0, 0, -1]]).T
+    m[:3, :3] = A.T @ R.from_quat(quat).as_matrix() @ A
+
+    return m
 
 
 class Kinematics:
@@ -21,7 +41,6 @@ class Kinematics:
     solver: placo.DynamicsSolver
 
     effector_task: placo.DynamicsFrameTask
-    gripper_task: placo.DynamicsJointsTask
 
     def __init__(
         self,
@@ -59,10 +78,11 @@ class Kinematics:
         )
         effector_task.configure(effector_name, "soft", pos_weight, rot_weight)
 
-        self.gripper_task = gripper_task = solver.add_joints_task()
-        gripper_task.configure(gripper_name, "soft", 1.0)
-
         effector_task.T_world_frame = solver.robot.get_T_world_frame(effector_name)
+
+        self.gripper_task = gripper_task = solver.add_joints_task()
+
+        gripper_task.configure(gripper_name, "soft", 1)
         gripper_task.set_joint(gripper_name, 0)
 
         posture = solver.add_joints_task()
@@ -85,9 +105,9 @@ class Kinematics:
         self.robot.update_kinematics()
 
     def get_qpos(self):
-        joints = [self.robot.get_joint(f"joint{i + 1}") for i in range(6)]
-        joints.append(self.robot.get_joint(self.gripper_name))
-        return joints
+        qpos = [self.robot.get_joint(f"joint{i + 1}") for i in range(6)]
+        qpos.append(self.robot.get_joint(self.gripper_name))
+        return tuple(qpos)
 
     def forward(self):
         return self.robot.get_T_world_frame(self.effector_name)
@@ -95,20 +115,20 @@ class Kinematics:
     def inverse(
         self,
         frame: ArrayLike,
-        gripper: float,
+        ee: float,
         *,
         vel: ArrayLike | None = None,
-        ee_vel: float = 0,
+        ee_vel: float = 0.0,
     ):
         self.effector_task.T_world_frame = np.asarray(frame)
+        self.gripper_task.set_joint(self.gripper_name, ee, ee_vel)
 
         if vel is not None:
             self.effector_task.position().dtarget_world = np.asarray(vel)
 
-        self.gripper_task.set_joint(self.gripper_name, gripper, ee_vel)
-
         result = self.solver.solve(True)
         self.robot.update_kinematics()
+
         return result
 
 
@@ -135,32 +155,54 @@ class JointState:
     vel: tuple[float, ...]
 
 
-class RealPiper:
-    def __init__(self, channel: str = "can0", timeout: float = 1.0):
+class Piper(threading.Thread):
+    def __init__(self, channel, *, urdf_path, dt: float = 0.005, timeout: float = 1.0):
+        super().__init__(daemon=True)
+
+        self.timeout = timeout
+
+        self.lock = threading.Lock()
+
         cfg = create_agx_arm_config(robot=ArmModel.PIPER, channel=channel)
 
-        self.arm = robot = AgxArmFactory.create_arm(cfg)
-        self.ee = robot.init_effector(robot.OPTIONS.EFFECTOR.AGX_GRIPPER)
+        self.arm = arm = AgxArmFactory.create_arm(cfg)
+        self.ee = arm.init_effector(arm.OPTIONS.EFFECTOR.AGX_GRIPPER)
 
-        robot.connect()
+        arm.connect()
 
-        if robot.has_comm_error():
-            raise RuntimeError
+        time.sleep(0.1)
 
-        robot.set_speed_percent(100)
-        robot.set_motion_mode("j")
+        self.enable_torque()
 
-        self.timeout: float = timeout
+        arm.set_speed_percent(100)
+        arm.set_motion_mode("j")
 
-    def close(self):
-        self.arm.disconnect()
+        self.k = Kinematics(urdf_path, dt=dt)
+
+        self.move_qpos([0] * 7, timeout=10)
+
+        self.q_pos_zero = self.k.get_qpos()
+
+        self.goal_q = Queue(maxsize=1_000)
+
+        self.robot_m = self.k.forward()
+        self.prev_m = self.robot_m.copy()
+        self.prev_gripper = 0.0
+
+        self.ema_pos = self.prev_m[:3, -1].copy()
+
+        self.anchor_m = None
 
     def enable_torque(self):
         t0 = time.perf_counter()
 
         while time.perf_counter() - t0 < self.timeout:
-            if self.arm.enable():
+            info = self.arm.enable()
+
+            if info:
                 return
+
+            time.sleep(0.01)
 
         raise TimeoutError
 
@@ -168,18 +210,42 @@ class RealPiper:
         t0 = time.perf_counter()
 
         while time.perf_counter() - t0 < self.timeout:
-            if self.arm.disable():
+            info = self.arm.disable()
+
+            if info:
                 return
+
+            time.sleep(0.01)
 
         raise TimeoutError
 
-    def send_qpos(self, qpos: ArrayLike, force: float = 1.0):
+    def move_qpos(self, qpos, force: float = 1.0, *, timeout: float = 0.0):
         qpos = np.asarray(qpos, dtype=np.float64)
 
         self.arm.move_j(list(qpos[:6]))
         self.ee.move_gripper_m(qpos[6], force)
 
-    def recv_q(self) -> JointState:
+        if timeout > 0:
+            t0 = time.perf_counter()
+
+            time.sleep(1 / 100)
+
+            while time.perf_counter() - t0 < timeout:
+                status = self.arm.get_arm_status()
+
+                if status is None:
+                    continue
+
+                info = status.msg.motion_status
+
+                if info == 0x00:
+                    return
+
+                time.sleep(0.01)
+            else:
+                raise TimeoutError
+
+    def read_q(self):
         t0 = time.perf_counter()
 
         while time.perf_counter() - t0 < self.timeout:
@@ -226,13 +292,91 @@ class RealPiper:
 
         raise TimeoutError
 
-    def calibrate(self, joint_idx: int):
-        t0 = time.perf_counter()
+    def close(self):
+        self.arm.disconnect()
 
-        while time.perf_counter() - t0 < self.timeout:
-            if self.arm.calibrate_joint(joint_idx):
-                return
+    def run(self):
+        def ik_loop():
+            with self.lock:
+                if self.goal_q.empty():
+                    return
 
-            time.sleep(0.1)
+                goal = self.goal_q.get()
 
-        raise TimeoutError
+            self.k.inverse(
+                goal["frame"],
+                goal["gripper"],
+                vel=goal["vel"],
+                ee_vel=goal["gripper_vel"],
+            )
+
+            qpos = self.k.get_qpos()
+            self.move_qpos(qpos)
+
+        schedule(ik_loop, interval=self.k.dt)
+
+        run_loop()
+
+    def init(self, pos, quat):
+        q = self.read_q()
+        self.k.set_qpos(np.array(q.pos) - self.q_pos_zero)
+
+        self.robot_m = self.k.forward()
+        self.prev_m = self.robot_m.copy()
+        self.prev_gripper = q.pos[6]
+
+        m = vr_to_flange(pos, quat)
+        self.anchor_m = m.copy()
+
+    def update_target(self, pos, quat, width, delta):
+        if self.anchor_m is None:
+            return
+
+        m = vr_to_flange(pos, quat)
+
+        delta_pos = m[:3, -1] - self.anchor_m[:3, -1]
+        m[:3, -1] = delta_pos * 1.5 + self.robot_m[:3, -1]
+
+        delta_rot = R.from_matrix(self.anchor_m[:3, :3]).inv() * R.from_matrix(
+            m[:3, :3]
+        )
+        m_rot = R.from_matrix(self.robot_m[:3, :3]) * (delta_rot**1.5)
+
+        m[:3, :3] = m_rot.as_matrix()
+
+        alpha = 0.4
+        self.ema_pos = m[:3, -1] * alpha + self.ema_pos * (1 - alpha)
+
+        m[:3, -1] = self.ema_pos
+
+        times = np.linspace(0, 1, max(int(delta / self.k.dt), 2))[1:]
+
+        gripper = width ** (1 / 2) * self.k.gripper_max
+
+        target_vel = (m[:3, -1] - self.prev_m[:3, -1]) / delta
+        target_gripper_vel = (gripper - self.prev_gripper) / delta
+
+        for t in times:
+            target_m = placo.interpolate_frames(self.prev_m, m, t)
+
+            target_gripper = (gripper - self.prev_gripper) * t + self.prev_gripper
+
+            self.goal_q.put(
+                {
+                    "frame": target_m,
+                    "vel": target_vel,
+                    "gripper": target_gripper,
+                    "gripper_vel": target_gripper_vel,
+                }
+            )
+
+        self.prev_m = m.copy()
+        self.prev_gripper = gripper
+
+    def clear_tqrget_q(self):
+        with self.lock:
+            while True:
+                try:
+                    self.goal_q.get_nowait()
+                except queue.Empty:
+                    break
