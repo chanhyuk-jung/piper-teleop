@@ -155,7 +155,7 @@ class JointState:
     vel: tuple[float, ...]
 
 
-class Piper(threading.Thread):
+class RealPiper(threading.Thread):
     def __init__(self, channel, *, urdf_path, dt: float = 0.005, timeout: float = 1.0):
         super().__init__(daemon=True)
 
