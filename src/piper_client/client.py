@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import queue
 import threading
 import time
@@ -44,13 +42,78 @@ class Kinematics:
         urdf_path: str,
         *,
         effector_name: str = "gripper_tcp",
-        gripper_name: str = "gripper",
         dt: float = 0.008,
         pos_weight: float = 1.0,
         rot_weight: float = 5e-3,
-        gripper_max: float = 0.1,
     ):
         self.effector_name: str = effector_name
+        self.dt: float = dt
+
+        self.robot = robot = placo.RobotWrapper(urdf_path)
+        self.solver = solver = placo.DynamicsSolver(robot)
+
+        solver.dt = dt
+
+        solver.enable_joint_limits(True)
+        solver.enable_velocity_limits(True)
+
+        solver.mask_fbase(True)
+
+        self.effector_task = effector_task = solver.add_frame_task(
+            effector_name, np.eye(4)
+        )
+        effector_task.configure(effector_name, "soft", pos_weight, rot_weight)
+
+        effector_task.T_world_frame = solver.robot.get_T_world_frame(effector_name)
+
+        posture = solver.add_joints_task()
+        posture.set_joints({f"joint{i + 1}": 0.0 for i in range(6)})
+        posture.configure("posture", "soft", 1e-4)
+
+    def set_qpos(self, joints: ArrayLike):
+        joints = np.asarray(joints, dtype=np.float64)
+
+        for i, joint in enumerate(joints[:6]):
+            self.robot.set_joint(f"joint{i + 1}", joint)
+
+        self.robot.update_kinematics()
+
+    def get_qpos(self):
+        qpos = [self.robot.get_joint(f"joint{i + 1}") for i in range(6)]
+        return qpos
+
+    def forward(self):
+        return self.robot.get_T_world_frame(self.effector_name)
+
+    def inverse(
+        self,
+        frame: ArrayLike,
+        *,
+        vel: ArrayLike | None = None,
+    ):
+        self.effector_task.T_world_frame = np.asarray(frame)
+
+        if vel is not None:
+            self.effector_task.position().dtarget_world = np.asarray(vel)
+
+        result = self.solver.solve(True)
+        self.robot.update_kinematics()
+
+        return result
+
+
+class JointKinematics:
+    robot: placo.RobotWrapper
+    solver: placo.DynamicsSolver
+
+    def __init__(
+        self,
+        urdf_path: str,
+        *,
+        gripper_name: str = "gripper",
+        dt: float = 0.008,
+        gripper_max: float = 0.1,
+    ):
         self.gripper_name: str = gripper_name
         self.dt: float = dt
         self.gripper_max: float = gripper_max
@@ -66,25 +129,24 @@ class Kinematics:
         solver.mask_fbase(True)
 
         gears = solver.add_gear_task()
-        gears.add_gear("gripper_joint1", "gripper", 0.5)
+        gears.set_gear("gripper_joint1", "gripper", 0.5)
         gears.add_gear("gripper_joint2", "gripper", -0.5)
         gears.configure("gear", "hard")
 
-        self.effector_task = effector_task = solver.add_frame_task(
-            effector_name, np.eye(4)
-        )
-        effector_task.configure(effector_name, "soft", pos_weight, rot_weight)
+        self.joints_task = joints_task = solver.add_joints_task()
 
-        effector_task.T_world_frame = solver.robot.get_T_world_frame(effector_name)
+        joints_task.configure("joints", "soft", 1)
 
-        self.gripper_task = gripper_task = solver.add_joints_task()
+    def inverse(self, joints, *, vel=None):
+        self.joints_task.set_joints(joints)
 
-        gripper_task.configure(gripper_name, "soft", 1)
-        gripper_task.set_joint(gripper_name, 0)
+        if vel is not None:
+            self.joints_task.set_joints_velocities(vel)
 
-        posture = solver.add_joints_task()
-        posture.set_joints({f"joint{i + 1}": 0.0 for i in range(6)})
-        posture.configure("posture", "soft", 1e-4)
+        result = self.solver.solve(True)
+        self.robot.update_kinematics()
+
+        return result
 
     def set_qpos(self, joints: ArrayLike):
         joints = np.asarray(joints, dtype=np.float64)
@@ -105,28 +167,6 @@ class Kinematics:
         qpos = [self.robot.get_joint(f"joint{i + 1}") for i in range(6)]
         qpos.append(self.robot.get_joint(self.gripper_name))
         return tuple(qpos)
-
-    def forward(self):
-        return self.robot.get_T_world_frame(self.effector_name)
-
-    def inverse(
-        self,
-        frame: ArrayLike,
-        ee: float,
-        *,
-        vel: ArrayLike | None = None,
-        ee_vel: float = 0.0,
-    ):
-        self.effector_task.T_world_frame = np.asarray(frame)
-        self.gripper_task.set_joint(self.gripper_name, ee, ee_vel)
-
-        if vel is not None:
-            self.effector_task.position().dtarget_world = np.asarray(vel)
-
-        result = self.solver.solve(True)
-        self.robot.update_kinematics()
-
-        return result
 
 
 def raise_timeout(fn):
@@ -153,7 +193,7 @@ class JointState:
 
 
 class Client:
-    def __init__(self, channel: str, *, urdf_path: str, timeout: float = 1.0):
+    def __init__(self, channel: str, *, timeout: float = 1.0):
         self.timeout = timeout
 
         cfg = create_agx_arm_config(robot=ArmModel.PIPER, channel=channel)
@@ -271,6 +311,63 @@ class Client:
         self.arm.disconnect()
 
 
+class EMA:
+    def __init__(self, x, *, alpha: float = 0.4):
+        self.ema = x
+        self.alpha = alpha
+
+    def __call__(self, x):
+        self.ema = x * self.alpha + self.ema * (1 - self.alpha)
+        return self.ema
+
+
+class Planner:
+    def __init__(self, frame, qpos, dt):
+        self.frame = frame.copy()
+        self.gripper = qpos[6]
+
+        self.qpos = qpos
+        self.dt = dt
+
+        self.dt = dt
+
+    def plan_ee(self, frame, gripper, dt):
+        target_vel = (frame[:3, -1] - self.frame[:3, -1]) / dt
+        target_gripper_vel = (gripper - self.gripper) / dt
+
+        times = np.linspace(0, 1, max(int(dt / self.dt), 2))[1:]
+
+        trajectory = []
+        for t in times:
+            target_m = placo.interpolate_frames(self.frame, frame, t)
+            target_gripper = (gripper - self.gripper) * t + self.gripper
+            yield {
+                "frame": target_m,
+                "vel": target_vel,
+                "ee": target_gripper,
+                "ee_vel": target_gripper_vel,
+            }
+
+        self.frame = frame.copy()
+        self.gripper = gripper
+
+        return trajectory
+
+    def plan_qpos(self, qpos, dt):
+        target_vel = (np.array(qpos) - self.qpos) / dt
+
+        times = np.linspace(0, 1, max(int(dt / self.dt), 2))[1:]
+
+        trajectory = []
+        for t in times:
+            target_qpos = target_vel * t + self.qpos
+            yield {"qpos": target_qpos, "vel": target_vel}
+
+        self.qpos = qpos.copy()
+
+        return trajectory
+
+
 class CoordTransform:
     robot_home: NDArray[np.float64]
     vr_home: NDArray[np.float64]
@@ -293,68 +390,33 @@ class CoordTransform:
         return frame
 
 
-class EMA:
-    def __init__(self, x, *, alpha: float = 0.4):
-        self.ema = x
-        self.alpha = alpha
-
-    def __call__(self, x):
-        self.ema = x * self.alpha + self.ema * (1 - self.alpha)
-        return self.ema
-
-
-class Planner:
-    def __init__(self, frame, gripper, dt):
-        self.frame = frame.copy()
-        self.gripper = gripper
-        self.dt = dt
-
-    def plan(self, frame, gripper, dt):
-        target_vel = (frame[:3, -1] - self.frame[:3, -1]) / dt
-        target_gripper_vel = (gripper - self.gripper) / dt
-
-        times = np.linspace(0, 1, max(int(dt / self.dt), 2))[1:]
-
-        trajectory = []
-        for t in times:
-            target_m = placo.interpolate_frames(self.frame, frame, t)
-            target_gripper = (gripper - self.gripper) * t + self.gripper
-            yield {
-                "frame": target_m,
-                "vel": target_vel,
-                "ee": target_gripper,
-                "ee_vel": target_gripper_vel,
-            }
-
-        self.frame = frame.copy()
-        self.gripper = gripper
-
-        return trajectory
-
-
 class TeleopThread(threading.Thread):
     def __init__(self, channel, *, urdf_path, dt: float = 0.005, timeout: float = 1.0):
         super().__init__()
 
-        self.client = Client(channel, urdf_path=urdf_path, timeout=timeout)
+        self.client = Client(channel, timeout=timeout)
 
         self.client.enable_torque()
         self.client.move_qpos([0] * 7, timeout=10)
 
         self.k = Kinematics(urdf_path, dt=dt)
+        self.jk = JointKinematics(urdf_path, dt=dt)
 
-        self.q_pos_zero = self.k.get_qpos()
+        self.home = self.k.forward().copy()
 
         self.action_q = Queue(maxsize=1_000)
 
         self.coord_tsfm = None
         self.ema = None
         self.planner = None
+        self.j_planner = None
 
-        self.action = [8.0] * 7
+        self.action = tuple([0.0] * 7)
 
         self.timeout = timeout
         self.lock = threading.Lock()
+
+        self.multiplier = 2
 
     def run(self):
         def ik_loop():
@@ -379,43 +441,99 @@ class TeleopThread(threading.Thread):
 
     def init(self, pos, quat):
         q = self.client.read_q()
-        self.k.set_qpos(np.array(q.pos) - self.q_pos_zero)
+        qpos = np.array(q.pos)
+
+        self.k.set_qpos(qpos[:6])
+        qpos[6] /= self.multiplier
+        self.jk.set_qpos(qpos)
 
         robot = self.k.forward()
         vr = vr_to_flange(pos, quat)
+
         self.coord_tsfm = CoordTransform(robot, vr)
 
         self.ema = EMA(self.k.forward()[:3, -1])
 
-        self.planner = Planner(robot, self.k.get_qpos()[6], self.k.dt)
+        self.planner = Planner(robot, self.jk.get_qpos(), self.k.dt)
 
-    def update_target(self, pos, quat, width, delta):
+    def vr_to_robot(self, pos, quat):
         if self.coord_tsfm is None:
             return
 
         m = vr_to_flange(pos, quat)
-
         m = self.coord_tsfm(m)
 
+        return m
+
+    def sync_ks(self):
+        qpos = self.k.get_qpos()
+        self.jk.set_qpos(qpos[:6])
+        self.k.robot.set_joint(self.jk.gripper_name, self.jk.get_qpos()[6])
+
+    def update_ee(self, pos, quat, width, delta):
         if self.ema is None:
             raise RuntimeError
-
-        m[:3, -1] = self.ema(m[:3, -1])
-
-        gripper = width ** (1 / 2) * self.k.gripper_max
 
         if self.planner is None:
             raise RuntimeError
 
-        for target in self.planner.plan(m, gripper, delta):
+        if self.coord_tsfm is None:
+            return
+
+        frame = vr_to_flange(pos, quat)
+        frame = self.coord_tsfm(frame)
+
+        frame[:3, -1] = self.ema(frame[:3, -1])
+
+        gripper = width ** (1 / 2) * self.jk.gripper_max / self.multiplier
+
+        self.planner.frame = self.k.forward().copy()
+        self.planner.gripper = float(self.jk.get_qpos()[6])
+
+        for target in self.planner.plan_ee(frame, gripper, delta):
             self.k.inverse(
                 target["frame"],
-                target["ee"],
                 vel=target["vel"],
-                ee_vel=target["ee_vel"],
+            )
+            self.jk.inverse(
+                {self.jk.gripper_name: target["ee"]},
+                vel={self.jk.gripper_name: target["ee_vel"]},
             )
 
-            qpos = self.k.get_qpos()
+            qpos = list(self.k.get_qpos())
+            qpos.append(self.jk.get_qpos()[6] * self.multiplier)
+            qpos = tuple(qpos)
+
+            self.action_q.put(qpos)
+
+            self.action = qpos
+
+        self.sync_ks()
+
+    def update_qpos(self, qpos, delta):
+        if self.planner is None:
+            raise RuntimeError
+
+        self.planner.qpos = self.jk.get_qpos()
+
+        for target in self.planner.plan_qpos(qpos, delta):
+            qpos = target["qpos"]
+
+            joints = {f"joint{i + 1}": qpos[i] for i in range(6)}
+            joints[self.jk.gripper_name] = qpos[6]
+
+            vel = target["vel"]
+
+            joint_vels = {f"joint{i + 1}": vel[i] for i in range(6)}
+            joint_vels[self.jk.gripper_name] = vel[6]
+
+            self.jk.inverse(
+                joints,
+                vel=joint_vels,
+            )
+
+            qpos = self.jk.get_qpos()
+
             self.action_q.put(qpos)
 
             self.action = qpos
@@ -431,5 +549,5 @@ class TeleopThread(threading.Thread):
     def reset(self):
         self.pause()
 
-        self.client.move_qpos([0] * 7, timeout=10)
+        self.client.move_qpos([0] * 7)
         self.k.set_qpos([0] * 7)

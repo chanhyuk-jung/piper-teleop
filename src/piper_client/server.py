@@ -1,5 +1,6 @@
 import asyncio
 import json
+import multiprocessing as mp
 import os
 
 import click
@@ -15,34 +16,10 @@ async def async_serve(port: int, wrist_cam, front_cam, dataset):
     teleop = TeleopThread("can0", urdf_path="piper", dt=0.002)
     teleop.start_thread()
 
-    wrist_cap = open_camera(int(wrist_cam))
-    front_cap = open_camera(int(front_cam))
-
-    wrist_thread = CameraThread(wrist_cap)
-    front_thread = CameraThread(front_cap)
-
-    wrist_thread.start_thread()
-    front_thread.start_thread()
-
-    dataset = "demo.hdf5"
+    record = Recorder(teleop, dataset, wrist_cam, front_cam)
+    record.start_process()
 
     async def handler(websocket: ServerConnection):
-        if not os.path.exists(dataset):
-            f = h5py.File(dataset, "w")
-            f.create_group("data")
-            demo_idx = 0
-        else:
-            f = h5py.File(dataset, "r+")
-
-        data = f["data"]
-
-        if isinstance(data, h5py.Group):
-            demo_idx = len(data.keys())
-        else:
-            raise RuntimeError
-
-        history = []
-
         async for message in websocket:
             msg = json.loads(message)
             payload = msg["payload"]
@@ -50,16 +27,10 @@ async def async_serve(port: int, wrist_cam, front_cam, dataset):
             if msg["type"] == "start":
                 teleop.init(payload["position"], payload["quaternion"])
 
-                obs_history = []
-                action_history = []
+            elif msg["type"] == "follow":
+                obs = record.get_obs()
 
-            elif msg["type"] == "move":
-                q = teleop.client.read_q()
-
-                front_img = front_thread.latest_frame
-                wrist_img = wrist_thread.latest_frame
-
-                teleop.update_target(
+                teleop.update_ee(
                     payload["position"],
                     payload["quaternion"],
                     payload["gripper"],
@@ -68,56 +39,142 @@ async def async_serve(port: int, wrist_cam, front_cam, dataset):
 
                 action = {"qpos": teleop.action}
 
-                obs = {
-                    "qpos": q.pos,
-                    "qvel": q.vel,
-                    "front_img": front_img,
-                    "wrist_img": wrist_img,
-                }
+                record.add(obs, action)
 
-                history.append([obs, action])
-
-            elif msg["type"] == "stop":
+            elif msg["type"] == "pause":
                 teleop.pause()
 
-                grp = data.create_group(f"demo_{demo_idx}")
-                demo_idx += 1
+            elif msg["type"] == "go_home":
+                obs = record.get_obs()
 
-                obs = grp.create_group("obs")
+                clamped = []
+                for theta in obs["qpos"]:
+                    if abs(theta) < 0.05:
+                        theta = 0
 
-                obs_history = [obs for obs, _ in history]
-                action_history = [action for _, action in history]
+                    clamped.append(theta)
 
-                obs.create_dataset(
-                    "qpos", data=np.array([obs["qpos"] for obs in obs_history])
-                )
-                obs.create_dataset(
-                    "qvel", data=np.array([obs["qvel"] for obs in obs_history])
-                )
-                obs.create_dataset(
-                    "front_img",
-                    data=np.stack([obs["front_img"] for obs in obs_history]),
-                )
-                obs.create_dataset(
-                    "wrist_img",
-                    data=np.stack([obs["wrist_img"] for obs in obs_history]),
-                )
+                if np.abs(clamped).sum() != 0:
+                    teleop.update_qpos([0.0] * 7, msg["delta"])
 
-                act = grp.create_group("action")
+                action = {"qpos": teleop.action}
 
-                act.create_dataset(
-                    "qpos", data=np.array([action["qpos"] for action in action_history])
-                )
+                record.add(obs, action)
 
-                f.flush()
-
-            elif msg["type"] == "reset":
-                teleop.reset()
+            elif msg["type"] == "save":
+                record.flush()
 
     server = await serve(handler, host="0.0.0.0", port=port)
     print(f"websocket server running at http://127.0.0.1:{port}")
 
     await server.serve_forever()
+
+
+class Recorder(mp.Process):
+    def __init__(self, teleop, dataset, wrist, front):
+        super().__init__()
+
+        if not os.path.exists(dataset):
+            f = h5py.File(dataset, "w")
+            f.create_group("data")
+            self.demo_idx = 0
+        else:
+            f = h5py.File(dataset, "r+")
+
+        data = f["data"]
+
+        if isinstance(data, h5py.Group):
+            self.demo_idx = len(data.keys())
+        else:
+            raise RuntimeError
+
+        self.f = f
+        self.data = data
+
+        self.q = mp.Queue(maxsize=-1)
+
+        self.history = []
+
+        wrist_cap = open_camera(int(wrist))
+        front_cap = open_camera(int(front))
+
+        self.wrist_thread = wrist_thread = CameraThread(wrist_cap)
+        self.front_thread = front_thread = CameraThread(front_cap)
+
+        wrist_thread.start_thread()
+        front_thread.start_thread()
+
+        self.teleop: TeleopThread = teleop
+
+    def new(self, pos, quat):
+        self.history = []
+        self.teleop.init(pos, quat)
+
+    def get_obs(self):
+        q = self.teleop.client.read_q()
+
+        wrist_img = self.wrist_thread.latest_frame
+        front_img = self.front_thread.latest_frame
+
+        obs = {
+            "qpos": q.pos,
+            "qvel": q.vel,
+            "front_img": front_img,
+            "wrist_img": wrist_img,
+        }
+        return obs
+
+    def add(self, obs, action):
+        self.history.append([obs, action])
+
+    def flush(self):
+        self.q.put(self.history)
+
+        self.history = []
+
+        self.teleop.reset()
+
+    def run(self):
+        while True:
+            history = self.q.get()
+
+            grp = self.data.create_group(f"demo_{self.demo_idx}")
+            self.demo_idx += 1
+
+            obs = grp.create_group("obs")
+
+            obs_history = [obs for obs, _ in history]
+            action_history = [action for _, action in history]
+
+            obs.create_dataset(
+                "qpos", data=np.array([obs["qpos"] for obs in obs_history])
+            )
+            obs.create_dataset(
+                "qvel", data=np.array([obs["qvel"] for obs in obs_history])
+            )
+            obs.create_dataset(
+                "front_img",
+                data=np.stack([obs["front_img"] for obs in obs_history]),
+            )
+            obs.create_dataset(
+                "wrist_img",
+                data=np.stack([obs["wrist_img"] for obs in obs_history]),
+            )
+
+            act = grp.create_group("action")
+
+            act.create_dataset(
+                "qpos", data=np.array([action["qpos"] for action in action_history])
+            )
+
+            self.f.flush()
+
+    def start_process(self):
+        self.daemon = True
+        self.start()
+
+    def stop_process(self):
+        pass
 
 
 @click.command()
