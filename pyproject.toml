@@ -1,0 +1,18 @@
+[build-system]
+requires = ["uv_build >= 0.12.10, <0.13.0"]
+build-backend = "uv_build"
+
+[project]
+name = "piper-client"
+requires-python = ">=3.8,<3.13"
+dependencies = [
+    "placo",
+    "scipy",
+    "websockets",
+    "pyAgxArm @ https://github.com/agilexrobotics/pyAgxArm.git",
+    "schedule",
+    "click",
+    "opencv-python",
+    "h5py",
+]
+version = "0.0.0"

@@ -1,23 +1,26 @@
+from pathlib import Path
+
 import cv2
 
-# 1. Initialize the video capture object (0 is usually the built-in webcam)
-cap = cv2.VideoCapture(2)
+paths = list(Path("/dev").glob("video*"))[3:]
+print(list(paths))
 
-# Check if the camera opened correctly
-if not cap.isOpened():
-    print("Error: Could not open the camera.")
-    exit()
+for path in paths:
+    try:
+        cap = cv2.VideoCapture(str(path))
+    except:
+        continue
 
-# 2. Grab a single frame
-# ret is a boolean (True if successful), frame is the actual image array
-ret, frame = cap.read()
+    if not cap.isOpened():
+        print("Error: Could not open the camera.")
+        exit()
 
-if ret:
-    # 3. Save the frame to your computer
-    cv2.imwrite("captured_frame.jpg", frame)
-    print("Frame saved successfully as 'captured_frame.jpg'!")
-else:
-    print("Error: Could not read a frame from the camera.")
+    ret, frame = cap.read()
 
-# 4. Always release the camera resource when finished
-cap.release()
+    if ret:
+        cv2.imwrite(f"{path.name}_img.jpg", frame)
+        print(f"Frame saved successfully as {path.name}_img.jpg")
+    else:
+        print("Error: Could not read a frame from the camera.")
+
+    cap.release()

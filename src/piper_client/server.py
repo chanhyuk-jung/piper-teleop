@@ -7,13 +7,13 @@ import h5py
 import numpy as np
 from websockets.asyncio.server import ServerConnection, serve
 
-from camera import CameraThread, open_camera
-from piper_utils import RealPiper
+from .camera import CameraThread, open_camera
+from .client import TeleopThread
 
 
 async def async_serve(port: int, wrist_cam, front_cam, dataset):
-    piper = RealPiper("can0", urdf_path="piper")
-    piper.start()
+    teleop = TeleopThread("can0", urdf_path="piper")
+    teleop.start_thread()
 
     wrist_cap = open_camera(int(wrist_cam))
     front_cap = open_camera(int(front_cam))
@@ -33,7 +33,13 @@ async def async_serve(port: int, wrist_cam, front_cam, dataset):
             demo_idx = 0
         else:
             f = h5py.File(dataset, "r+")
-            demo_idx = len(f["data"].keys())
+
+        data = f["data"]
+
+        if isinstance(data, h5py.Group):
+            demo_idx = len(data.keys())
+        else:
+            raise RuntimeError
 
         history = []
 
@@ -42,15 +48,25 @@ async def async_serve(port: int, wrist_cam, front_cam, dataset):
             payload = msg["payload"]
 
             if msg["type"] == "start":
-                piper.init(payload["position"], payload["quaternion"])
+                teleop.init(payload["position"], payload["quaternion"])
 
-                history = []
+                obs_history = []
+                action_history = []
 
             elif msg["type"] == "move":
-                q = piper.read_q()
+                q = teleop.client.read_q()
 
                 front_img = front_thread.async_read()
                 wrist_img = wrist_thread.async_read()
+
+                teleop.update_target(
+                    payload["position"],
+                    payload["quaternion"],
+                    payload["gripper"],
+                    msg["delta"],
+                )
+
+                action = {"qpos": teleop.action}
 
                 obs = {
                     "qpos": q.pos,
@@ -59,56 +75,44 @@ async def async_serve(port: int, wrist_cam, front_cam, dataset):
                     "wirst_img": wrist_img,
                 }
 
-                piper.update_target(
-                    payload["position"],
-                    payload["quaternion"],
-                    payload["gripper"],
-                    msg["delta"],
-                )
-
-                qpos = piper.k.get_qpos()
-
-                action = {"qpos": qpos}
-
                 history.append([obs, action])
 
             elif msg["type"] == "stop":
-                piper.clear_tqrget_q()
+                teleop.pause()
 
             elif msg["type"] == "reset":
-                piper.clear_tqrget_q()
+                teleop.reset()
 
-                piper.move_qpos([0] * 7, timeout=10)
-                piper.k.set_qpos([0] * 7)
-
-                grp = f["data"].create_group(f"demo_{demo_idx}")
+                grp = data.create_group(f"demo_{demo_idx}")
                 demo_idx += 1
 
-                grp.create_group("obs")
+                obs = grp.create_group("obs")
 
                 obs_history = [obs for obs, _ in history]
                 action_history = [action for _, action in history]
 
-                grp["obs"].create_dataset(
+                obs.create_dataset(
                     "qpos", data=np.array([obs["qpos"] for obs in obs_history])
                 )
-                grp["obs"].create_dataset(
+                obs.create_dataset(
                     "qvel", data=np.array([obs["qvel"] for obs in obs_history])
                 )
-                grp["obs"].create_dataset(
+                obs.create_dataset(
                     "front_img",
                     data=np.stack([obs["front_img"] for obs in obs_history]),
                 )
-                grp["obs"].create_dataset(
+                obs.create_dataset(
                     "wrist_img",
                     data=np.stack([obs["wrist_img"] for obs in obs_history]),
                 )
 
-                grp.create_group("action")
+                act = grp.create_group("action")
 
-                grp["action"].create_dataset(
+                act.create_dataset(
                     "qpos", data=np.array([action["qpos"] for action in action_history])
                 )
+
+                f.flush()
 
     server = await serve(handler, host="0.0.0.0", port=port)
     print(f"websocket server running at http://127.0.0.1:{port}")

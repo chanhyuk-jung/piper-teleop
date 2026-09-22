@@ -10,20 +10,18 @@ from queue import Queue
 import numpy as np
 import placo
 from ischedule import run_loop, schedule
-from numpy.typing import ArrayLike
+from numpy.typing import ArrayLike, NDArray
 from pyAgxArm import (
     AgxArmFactory,
     ArmModel,
     create_agx_arm_config,
 )
-from pyAgxArm.protocols.can_protocol.drivers import AgxGripperDriverDefault
-from pyAgxArm.protocols.can_protocol.drivers.piper.default.driver import Driver
 from pyAgxArm.protocols.can_protocol.msgs.core import MessageAbstract
 from pyAgxArm.protocols.can_protocol.msgs.piper.default import ArmMsgFeedbackHighSpd
 from scipy.spatial.transform import Rotation as R
 
 
-def vr_to_flange(pos, quat):
+def vr_to_flange(pos, quat) -> NDArray[np.float64]:
     m = np.eye(4)
 
     x, y, z = pos
@@ -154,13 +152,9 @@ class JointState:
     vel: tuple[float, ...]
 
 
-class RealPiper(threading.Thread):
-    def __init__(self, channel, *, urdf_path, dt: float = 0.005, timeout: float = 1.0):
-        super().__init__(daemon=True)
-
+class Client:
+    def __init__(self, channel: str, *, urdf_path: str, timeout: float = 1.0):
         self.timeout = timeout
-
-        self.lock = threading.Lock()
 
         cfg = create_agx_arm_config(robot=ArmModel.PIPER, channel=channel)
 
@@ -171,26 +165,8 @@ class RealPiper(threading.Thread):
 
         time.sleep(0.1)
 
-        self.enable_torque()
-
         arm.set_speed_percent(100)
         arm.set_motion_mode("j")
-
-        self.k = Kinematics(urdf_path, dt=dt)
-
-        self.move_qpos([0] * 7, timeout=10)
-
-        self.q_pos_zero = self.k.get_qpos()
-
-        self.goal_q = Queue(maxsize=1_000)
-
-        self.robot_m = self.k.forward()
-        self.prev_m = self.robot_m.copy()
-        self.prev_gripper = 0.0
-
-        self.ema_pos = self.prev_m[:3, -1].copy()
-
-        self.anchor_m = None
 
     def enable_torque(self):
         t0 = time.perf_counter()
@@ -294,88 +270,166 @@ class RealPiper(threading.Thread):
     def close(self):
         self.arm.disconnect()
 
+
+class CoordTransform:
+    robot_home: NDArray[np.float64]
+    vr_home: NDArray[np.float64]
+
+    def __init__(self, robot, vr):
+        self.robot_home = robot.copy()
+        self.vr_home = vr.copy()
+
+    def __call__(self, frame):
+        delta_pos = frame[:3, -1] - self.vr_home[:3, -1]
+        frame[:3, -1] = delta_pos * 1.5 + self.robot_home[:3, -1]
+
+        delta_rot = R.from_matrix(self.vr_home[:3, :3]).inv() * R.from_matrix(
+            frame[:3, :3]
+        )
+        m_rot = R.from_matrix(self.robot_home[:3, :3]) * (delta_rot**1.5)
+
+        frame[:3, :3] = m_rot.as_matrix()
+
+        return frame
+
+
+class EMA:
+    def __init__(self, x, *, alpha: float = 0.4):
+        self.ema = x
+        self.alpha = alpha
+
+    def __call__(self, x):
+        self.ema = x * self.alpha + self.ema * (1 - self.alpha)
+        return self.ema
+
+
+class Planner:
+    def __init__(self, frame, gripper, dt):
+        self.frame = frame.copy()
+        self.gripper = gripper
+        self.dt = dt
+
+    def plan(self, frame, gripper, dt):
+        target_vel = (frame[:3, -1] - self.frame[:3, -1]) / dt
+        target_gripper_vel = (gripper - self.gripper) / dt
+
+        times = np.linspace(0, 1, max(int(dt / self.dt), 2))[1:]
+
+        trajectory = []
+        for t in times:
+            target_m = placo.interpolate_frames(self.frame, frame, t)
+            target_gripper = (gripper - self.gripper) * t + self.gripper
+            yield {
+                "frame": target_m,
+                "vel": target_vel,
+                "ee": target_gripper,
+                "ee_vel": target_gripper_vel,
+            }
+
+        self.frame = frame.copy()
+        self.gripper = gripper
+
+        return trajectory
+
+
+class TeleopThread(threading.Thread):
+    def __init__(self, channel, *, urdf_path, dt: float = 0.005, timeout: float = 1.0):
+        super().__init__()
+
+        self.client = Client(channel, urdf_path=urdf_path, timeout=timeout)
+
+        self.client.enable_torque()
+        self.client.move_qpos([0] * 7, timeout=10)
+
+        self.k = Kinematics(urdf_path, dt=dt)
+
+        self.q_pos_zero = self.k.get_qpos()
+
+        self.action_q = Queue(maxsize=1_000)
+
+        self.coord_tsfm = None
+        self.ema = None
+        self.planner = None
+
+        self.action = [8.0] * 7
+
+        self.timeout = timeout
+        self.lock = threading.Lock()
+
     def run(self):
         def ik_loop():
             with self.lock:
-                if self.goal_q.empty():
+                if self.action_q.empty():
                     return
 
-                goal = self.goal_q.get()
+                qpos = self.action_q.get()
 
-            self.k.inverse(
-                goal["frame"],
-                goal["gripper"],
-                vel=goal["vel"],
-                ee_vel=goal["gripper_vel"],
-            )
-
-            qpos = self.k.get_qpos()
-            self.move_qpos(qpos)
+            self.client.move_qpos(qpos)
 
         schedule(ik_loop, interval=self.k.dt)
 
         run_loop()
 
+    def start_thread(self):
+        self.daemon = True
+        self.start()
+
+    def stop_thread(self):
+        pass
+
     def init(self, pos, quat):
-        q = self.read_q()
+        q = self.client.read_q()
         self.k.set_qpos(np.array(q.pos) - self.q_pos_zero)
 
-        self.robot_m = self.k.forward()
-        self.prev_m = self.robot_m.copy()
-        self.prev_gripper = q.pos[6]
+        robot = self.k.forward()
+        vr = vr_to_flange(pos, quat)
+        self.coord_tsfm = CoordTransform(robot, vr)
 
-        m = vr_to_flange(pos, quat)
-        self.anchor_m = m.copy()
+        self.ema = EMA(self.k.forward()[:3, -1])
+
+        self.planner = Planner(robot, self.k.get_qpos()[6], self.k.dt)
 
     def update_target(self, pos, quat, width, delta):
-        if self.anchor_m is None:
+        if self.coord_tsfm is None:
             return
 
         m = vr_to_flange(pos, quat)
 
-        delta_pos = m[:3, -1] - self.anchor_m[:3, -1]
-        m[:3, -1] = delta_pos * 1.5 + self.robot_m[:3, -1]
+        m = self.coord_tsfm(m)
 
-        delta_rot = R.from_matrix(self.anchor_m[:3, :3]).inv() * R.from_matrix(
-            m[:3, :3]
-        )
-        m_rot = R.from_matrix(self.robot_m[:3, :3]) * (delta_rot**1.5)
+        if self.ema is None:
+            raise RuntimeError
 
-        m[:3, :3] = m_rot.as_matrix()
-
-        alpha = 0.4
-        self.ema_pos = m[:3, -1] * alpha + self.ema_pos * (1 - alpha)
-
-        m[:3, -1] = self.ema_pos
-
-        times = np.linspace(0, 1, max(int(delta / self.k.dt), 2))[1:]
+        m[:3, -1] = self.ema(m[:3, -1])
 
         gripper = width ** (1 / 2) * self.k.gripper_max
 
-        target_vel = (m[:3, -1] - self.prev_m[:3, -1]) / delta
-        target_gripper_vel = (gripper - self.prev_gripper) / delta
+        if self.planner is None:
+            raise RuntimeError
 
-        for t in times:
-            target_m = placo.interpolate_frames(self.prev_m, m, t)
-
-            target_gripper = (gripper - self.prev_gripper) * t + self.prev_gripper
-
-            self.goal_q.put(
-                {
-                    "frame": target_m,
-                    "vel": target_vel,
-                    "gripper": target_gripper,
-                    "gripper_vel": target_gripper_vel,
-                }
+        for target in self.planner.plan(m, gripper, delta):
+            self.k.inverse(
+                target["frame"],
+                target["ee"],
+                vel=target["vel"],
+                ee_vel=target["ee_vel"],
             )
 
-        self.prev_m = m.copy()
-        self.prev_gripper = gripper
+            qpos = self.k.get_qpos()
+            self.action_q.put(qpos)
 
-    def clear_tqrget_q(self):
+            self.action = qpos
+
+    def pause(self):
         with self.lock:
             while True:
                 try:
-                    self.goal_q.get_nowait()
+                    self.action_q.get_nowait()
                 except queue.Empty:
                     break
+
+    def reset(self):
+        self.pause()
+
+        self.client.move_qpos([0] * 7, timeout=10)
+        self.k.set_qpos([0] * 7)
