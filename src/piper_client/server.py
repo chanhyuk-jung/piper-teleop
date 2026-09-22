@@ -56,8 +56,8 @@ async def async_serve(port: int, wrist_cam, front_cam, dataset):
             elif msg["type"] == "move":
                 q = teleop.client.read_q()
 
-                front_img = front_thread.async_read()
-                wrist_img = wrist_thread.async_read()
+                front_img = front_thread.latest_frame
+                wrist_img = wrist_thread.latest_frame
 
                 teleop.update_target(
                     payload["position"],
@@ -79,9 +79,6 @@ async def async_serve(port: int, wrist_cam, front_cam, dataset):
 
             elif msg["type"] == "stop":
                 teleop.pause()
-
-            elif msg["type"] == "reset":
-                teleop.reset()
 
                 grp = data.create_group(f"demo_{demo_idx}")
                 demo_idx += 1
@@ -113,6 +110,9 @@ async def async_serve(port: int, wrist_cam, front_cam, dataset):
                 )
 
                 f.flush()
+
+            elif msg["type"] == "reset":
+                teleop.reset()
 
     server = await serve(handler, host="0.0.0.0", port=port)
     print(f"websocket server running at http://127.0.0.1:{port}")
