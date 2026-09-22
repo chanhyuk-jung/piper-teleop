@@ -12,7 +12,7 @@ from .client import TeleopThread
 
 
 async def async_serve(port: int, wrist_cam, front_cam, dataset):
-    teleop = TeleopThread("can0", urdf_path="piper")
+    teleop = TeleopThread("can0", urdf_path="piper", dt=0.002)
     teleop.start_thread()
 
     wrist_cap = open_camera(int(wrist_cam))
@@ -72,7 +72,7 @@ async def async_serve(port: int, wrist_cam, front_cam, dataset):
                     "qpos": q.pos,
                     "qvel": q.vel,
                     "front_img": front_img,
-                    "wirst_img": wrist_img,
+                    "wrist_img": wrist_img,
                 }
 
                 history.append([obs, action])
