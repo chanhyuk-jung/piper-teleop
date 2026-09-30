@@ -4,15 +4,22 @@ build-backend = "uv_build"
 
 [project]
 name = "piper-client"
-requires-python = ">=3.8,<3.13"
+requires-python = ">=3.10"
 dependencies = [
     "placo",
     "scipy",
     "websockets",
     "pyAgxArm @ https://github.com/agilexrobotics/pyAgxArm.git",
-    "schedule",
+    "ischedule",
     "click",
-    "opencv-python",
-    "h5py",
+    "numpy>=2.0.0,<2.3.0",
+    "opencv-python-headless>=4.9.0,<4.14.0",
+    "zarr",
 ]
 version = "0.0.0"
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+files = ["src/piper_client"]
+mypy_path = "stubs"

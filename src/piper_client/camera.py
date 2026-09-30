@@ -16,13 +16,13 @@ def open_camera(index, fps=30, width=640, height=480, warmup_s=1):
     width_success = cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
     height_success = cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(height))
 
-    actual_width = int(round(cap.get(cv2.CAP_PROP_FRAME_WIDTH)))
+    actual_width = round(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     if not width_success or width != actual_width:
         raise RuntimeError(
             f"failed to set {width=} ({actual_width=}, {width_success=})."
         )
 
-    actual_height = int(round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+    actual_height = round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     if not height_success or height != actual_height:
         raise RuntimeError(
             f"failed to set {height=} ({actual_height=}, {height_success=})."

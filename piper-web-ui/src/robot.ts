@@ -11,7 +11,7 @@ export class RobotSystem extends createSystem(
   {},
   {
     scale: { type: Types.Float32, default: 1 },
-    serverIp: { type: Types.String, default: `ws://${window.location.hostname}:65432` },
+    serverIp: { type: Types.String, default: `ws://${window.location.hostname}:4000` },
   },
 ) {
   private coupled = false;
@@ -47,6 +47,10 @@ export class RobotSystem extends createSystem(
     };
 
     const squeezed = pad.getButtonPressed("xr-standard-squeeze");
+
+    if (!this.coupled  && !squeezed) {
+      return;
+    }
 
     if (this.coupled && squeezed) {
       msg["type"] = "follow";

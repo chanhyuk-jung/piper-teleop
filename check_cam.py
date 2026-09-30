@@ -1,25 +1,16 @@
-from pathlib import Path
-
 import cv2
 
-paths = list(Path("/dev").glob("video*"))[3:]
-print(list(paths))
-
-for path in paths:
+for i in range(6):
     try:
-        cap = cv2.VideoCapture(str(path))
+        cap = cv2.VideoCapture(i)
     except:
         continue
-
-    if not cap.isOpened():
-        print("Error: Could not open the camera.")
-        exit()
 
     ret, frame = cap.read()
 
     if ret:
-        cv2.imwrite(f"{path.name}_img.jpg", frame)
-        print(f"Frame saved successfully as {path.name}_img.jpg")
+        cv2.imwrite(f"{i}_img.jpg", frame)
+        print(f"Frame saved successfully as {i}_img.jpg")
     else:
         print("Error: Could not read a frame from the camera.")
 
