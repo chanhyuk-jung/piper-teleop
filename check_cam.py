@@ -1,10 +1,7 @@
 import cv2
 
-for i in range(6):
-    try:
-        cap = cv2.VideoCapture(i)
-    except:
-        continue
+for i in range(8):
+    cap = cv2.VideoCapture(i)
 
     ret, frame = cap.read()
 

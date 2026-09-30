@@ -1,6 +1,0 @@
-[environment]
-extra-paths = [".venv/lib/python3.12/site-packages/cmeel.prefix/lib/python3.12/site-packages"]
-
-
-[analysis]
-allowed-unresolved-imports = ["Boost.Python"]

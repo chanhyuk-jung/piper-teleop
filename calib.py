@@ -26,5 +26,6 @@ while True:
     history = [joints_max, joints_min]
 
     print(
-        f"joint max values: {joints_max.tolist()}, joint min values: {joints_min.tolist()}"
+        f"joint max values: {joints_max.tolist()}, \
+        joint min values: {joints_min.tolist()}"
     )

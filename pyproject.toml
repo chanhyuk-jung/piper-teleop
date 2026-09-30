@@ -12,6 +12,12 @@ dependencies = [
 version = "0.0.0"
 
 [project.optional-dependencies]
+dev = [
+    "ruff",
+    "ty",
+    "mypy",
+]
+
 teleop = [
     "placo",
     "scipy",
@@ -28,3 +34,41 @@ all = [
 
 [project.scripts]
 teleop-server = "piper_client.server:main"
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+exclude = ["stubs"]
+
+[tool.ruff.lint]
+# E, W: pycodestyle errors and warnings
+# F: PyFlakes
+# I: isort
+# UP: pyupgrade
+# B: flake8-bugbear (good practices, potential bugs)
+# C4: flake8-comprehensions (more concise comprehensions)
+# A: flake8-builtins (shadowing builtins)
+# SIM: flake8-simplify
+# RUF: Ruff-specific rules
+# D: pydocstyle (for docstring style/formatting)
+# S: flake8-bandit (some security checks, complements Bandit)
+# T20: flake8-print (discourage print statements in production code)
+# N: pep8-naming
+select = [
+    "E", "W", "I"
+]
+ignore = [
+    "T201", # Print statement found
+    "T203", # Pprint statement found
+    "B008", # Perform function call in argument defaults
+]
+
+
+[tool.ty]
+
+[tool.ty.analysis]
+allowed-unresolved-imports = ["Boost.Python"]
+
+[tool.ty.environment]
+extra-paths = ["stubs"]
+python-version = "3.12"
