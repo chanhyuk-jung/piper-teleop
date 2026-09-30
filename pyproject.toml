@@ -6,17 +6,25 @@ build-backend = "uv_build"
 name = "piper-client"
 requires-python = ">=3.12"
 dependencies = [
+    "pyAgxArm @ https://github.com/agilexrobotics/pyAgxArm.git",
+    "numpy>=2.0.0,<2.3.0",
+]
+version = "0.0.0"
+
+[project.optional-dependencies]
+teleop = [
     "placo",
     "scipy",
     "websockets",
-    "pyAgxArm @ https://github.com/agilexrobotics/pyAgxArm.git",
     "ischedule",
     "click",
-    "numpy>=2.0.0,<2.3.0",
     "opencv-python-headless>=4.9.0,<4.14.0",
     "zarr>=3.2.0",
 ]
-version = "0.0.0"
+
+all = [
+    "piper-client[teleop]"
+]
 
 [project.scripts]
 teleop-server = "piper_client.server:main"
