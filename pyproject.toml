@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "piper-client"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "placo",
     "scipy",
@@ -14,12 +14,9 @@ dependencies = [
     "click",
     "numpy>=2.0.0,<2.3.0",
     "opencv-python-headless>=4.9.0,<4.14.0",
-    "zarr",
+    "zarr>=3.2.0",
 ]
 version = "0.0.0"
 
-[tool.mypy]
-python_version = "3.10"
-ignore_missing_imports = true
-files = ["src/piper_client"]
-mypy_path = "stubs"
+[project.scripts]
+teleop-server = "piper_client.server:main"

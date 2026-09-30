@@ -1,35 +1,42 @@
 import threading
 from queue import Queue
-from typing import Any
 
 import numpy as np
 import zarr
+from numpy.typing import ArrayLike
 from zarr.codecs import BloscCodec
+from zarr.storage import LocalStore
 
 
 class ZarrRecorder:
     def __init__(self, path: str):
-        self.root = zarr.group(path, overwrite=False)
+        self.store = LocalStore(path)
+        self.root = zarr.group(store=self.store, overwrite=False)
 
         if "episode_ends" not in self.root:
-            self.ends = self.root.create_array(
+            self.root.create_group("obs")
+            self.root.create_group("action")
+
+            self.root.create_array(
                 name="episode_ends", shape=(0,), chunks=(1,), dtype="int64"
             )
 
-            self.obs = self.root.create_group("obs")
-            self.action = self.root.create_group("action")
-        else:
-            self.ends = self.root.get_array("episode_ends")
+        self.obs = self.root.get_group("obs")
+        self.action = self.root.get_group("action")
+        self.ends = self.root.get_array("episode_ends")
 
-            self.obs = self.root.get_group("obs")
-            self.action = self.root.get_group("action")
+        self.end = np.array([0], dtype=np.int64)
 
-        if self.ends.shape[0] == 0:
-            self.end = np.array([0], dtype=np.int64)
-        else:
+        if self.ends.shape[0] > 0:
             self.end = np.asarray([self.ends[-1]], dtype=np.int64)
 
-    def add(self, obs: dict[str, Any], action: dict[str, Any]):
+        self.trim(int(self.end))
+
+    def add(
+        self,
+        obs: dict[str, ArrayLike | dict[str, ArrayLike]],
+        action: dict[str, ArrayLike | dict[str, ArrayLike]],
+    ):
         for name, x in action.items():
             x = np.asarray(x)[None, :]
 
@@ -77,6 +84,33 @@ class ZarrRecorder:
 
         self.ends.append(self.end)
 
+    def check(self):
+        length = 0
+        if self.ends.shape[0] > 0:
+            length = self.ends[-1]
+
+        for name in self.action:
+            if length != self.action.get_array(name).shape[0]:
+                return False
+
+        for name in self.obs:
+            if length != self.obs.get_array(name).shape[0]:
+                return False
+
+        return True
+
+    def trim(self, length: int):
+        for name in self.action:
+            x = self.action.get_array(name)
+            x.resize([length, *x.shape[1:]])
+
+        for name in self.obs:
+            x = self.obs.get_array(name)
+            x.resize([length, *x.shape[1:]])
+
+    def close(self):
+        self.store.close()
+
 
 class RecordThread(threading.Thread):
     def __init__(self, recorder: ZarrRecorder):
@@ -89,6 +123,9 @@ class RecordThread(threading.Thread):
 
     def run(self):
         while not self.stop_event.is_set():
+            if self.q.empty():
+                continue
+
             val = self.q.get()
 
             if val is None:
@@ -109,3 +146,4 @@ class RecordThread(threading.Thread):
 
     def stop_thread(self):
         self.stop_event.set()
+        self.recorder.close()

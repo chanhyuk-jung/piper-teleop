@@ -35,13 +35,11 @@ class QuestThread(threading.Thread):
         self.anchor = np.eye(4)
 
     def subscribe(self, name: str):
-        def wrapper(fn):
+        def wrapper(fn) -> None:
             if name not in self.listeners:
                 self.listeners[name] = [fn]
             else:
                 self.listeners[name].append(fn)
-
-            return fn
 
         return wrapper
 
@@ -60,7 +58,6 @@ class QuestThread(threading.Thread):
     async def async_serve(self):
         self.server = await serve(self.handler, host="0.0.0.0", port=self.port)
 
-        print("server started")
         await self.server.serve_forever()
 
     def run(self):

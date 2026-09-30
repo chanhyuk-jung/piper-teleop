@@ -1,5 +1,6 @@
 import time
 from queue import Queue
+from threading import Event
 
 import click
 import numpy as np
@@ -14,6 +15,7 @@ from .robots import PiperFollower
 
 
 @click.command()
+@click.option("--data-path", type=str, required=True)
 @click.option("--port", default=4000)
 @click.option("--can", default="can0")
 @click.option("--urdf", default="piper")
@@ -21,9 +23,10 @@ from .robots import PiperFollower
 @click.option("--gripper_name", default="gripper")
 @click.option("--dt", default=0.001)
 @click.option("--ema", default=0.1)
-@click.option("--wrist_cam", type=int)
-@click.option("--front_cam", type=int)
+@click.option("--wrist-cam", type=int, required=True)
+@click.option("--front-cam", type=int, required=True)
 def main(
+    data_path: str,
     port=4000,
     can: str = "can0",
     urdf: str = "piper",
@@ -39,8 +42,8 @@ def main(
     ee_planner = EffectorPlanner(dt, alpha=ema)
     q_planner = JointPlanner(dt, alpha=1.0)
 
-    wrist_cap = open_camera(int(wrist_cam))
-    front_cap = open_camera(int(front_cam))
+    wrist_cap = open_camera(wrist_cam)
+    front_cap = open_camera(front_cam)
 
     wrist = CameraThread(wrist_cap)
     front = CameraThread(front_cap)
@@ -48,10 +51,16 @@ def main(
     wrist.start_thread()
     front.start_thread()
 
-    q = Queue(maxsize=-1)
+    print("cameras started")
 
-    recorder = ZarrRecorder(path="data")
+    recorder = ZarrRecorder(path=data_path)
     record_thread = RecordThread(recorder)
+
+    record_thread.start_thread()
+
+    print("recorder started")
+
+    q = Queue(maxsize=-1)
 
     quest = QuestThread(port)
 
@@ -79,7 +88,7 @@ def main(
         front_img = front.latest_frame
 
         obs = {}
-        obs["timestamp"] = t
+        obs["timestamp"] = np.array([t], dtype=np.float64)
         obs.update(state)
 
         obs["wrist_img"] = wrist_img
@@ -116,6 +125,19 @@ def main(
 
     @quest.subscribe("pause")
     def pause(_):
+        t = time.time()
+        state = robot.get_state()
+
+        wrist_img = wrist.latest_frame
+        front_img = front.latest_frame
+
+        obs = {}
+        obs["timestamp"] = np.array([t], dtype=np.float64)
+        obs.update(state)
+
+        obs["wrist_img"] = wrist_img
+        obs["front_img"] = front_img
+
         while not q.empty():
             q.get_nowait()
 
@@ -128,7 +150,7 @@ def main(
         front_img = front.latest_frame
 
         obs = {}
-        obs["timestamp"] = t
+        obs["timestamp"] = np.array([t], dtype=np.float64)
         obs.update(state)
 
         obs["wrist_img"] = wrist_img
@@ -148,22 +170,35 @@ def main(
 
         record_thread.record(obs, action)
 
-    quest.subscribe("save")
-
+    @quest.subscribe("save")
     def save(_):
         record_thread.save()
 
     quest.start_thread()
+    print("server started")
+
+    stop_control = Event()
 
     @schedule(interval=dt)
     def control_loop():
-        while q.empty():
+        while q.empty() and not stop_control.is_set():
             time.sleep(dt / 100)
 
         action = q.get()
         robot.move(action)
 
-    run_loop()
+    try:
+        run_loop(stop_control)
+    except KeyboardInterrupt:
+        print("closing server...")
+        stop_control.set()
+
+        wrist.stop_thread()
+        front.stop_thread()
+        quest.stop_thread()
+        record_thread.stop_thread()
+
+        record_thread.join()
 
 
 if __name__ == "__main__":
