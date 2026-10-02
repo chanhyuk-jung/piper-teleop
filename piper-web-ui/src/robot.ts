@@ -15,7 +15,6 @@ export class RobotSystem extends createSystem(
   },
 ) {
   private coupled = false;
-  private paused = false;
   private socket = new WebSocket(this.config.serverIp.value);
 
   init(): void {
@@ -41,7 +40,7 @@ export class RobotSystem extends createSystem(
     if (!pad || !raySpace) return;
 
     let msg = {
-      type: "idle",
+      type: "",
       delta: delta,
       timestamp: time,
       payload: {},
@@ -52,7 +51,6 @@ export class RobotSystem extends createSystem(
     } else if (pad.getButtonUp("xr-standard-squeeze")) {
       this.coupled = false;
       msg["type"] = "pause";
-      this.paused = true;
     }
 
     if (pad.getButtonDown("xr-standard-squeeze")) {
@@ -83,6 +81,8 @@ export class RobotSystem extends createSystem(
       };
     }
 
-    this.socket.send(JSON.stringify(msg));
+    if (msg["type"] !== "") {
+      this.socket.send(JSON.stringify(msg));
+    }
   }
 }

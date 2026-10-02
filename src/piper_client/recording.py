@@ -40,34 +40,35 @@ class ZarrRecorder:
     ):
         for name, x in action.items():
             x = np.asarray(x)
-            if x.ndim > 1:
-                x = x[None, :]
+            x = x[None, ...]
 
-            if name not in self.action:
+            if name not in self.action.array_keys():
                 compressors = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle")
 
-                self.action.create_array(
+                z = self.action.create_array(
                     name=name,
                     shape=x.shape,
                     dtype=x.dtype,
-                    chunks=[1, *x.shape[1:]],
+                    chunks=x.shape,
                     compressors=compressors,
                 )
+                z[:] = x
             else:
                 z = self.action.get_array(name)
                 z.append(x)
 
         for name, x in obs.items():
-            x = np.asarray(x)[None, :]
+            x = np.asarray(x)
+            x = x[None, ...]
 
-            if name not in self.obs:
+            if name not in self.obs.array_keys():
                 compressors = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle")
 
                 z = self.obs.create_array(
                     name=name,
                     shape=x.shape,
                     dtype=x.dtype,
-                    chunks=[1, *x.shape[1:]],
+                    chunks=x.shape,
                     compressors=compressors,
                 )
                 z[:] = x

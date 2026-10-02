@@ -1,3 +1,5 @@
+import time
+
 import click
 import numpy as np
 import rerun as rr
@@ -33,71 +35,32 @@ def main(dataset, index, save):
 
     for name in obs_group.array_keys():
         z = obs_group.get_array(name)[starts[index] : ends[index]]
+
         if "img" in name:
             obs[name] = np.asarray(z, dtype=np.uint8)
         else:
             obs[name] = np.asarray(z, dtype=np.float64)
 
-    times = obs["timestamp"][starts[index] : ends[index]]
+    times = obs["timestamp"]
     times = np.asarray(times, np.float64)
     times -= times[0]
 
-    for i in range(7):
-        qpos = obs["qpos"][:]
-        qvel = obs["qvel"][:]
+    for i, t in enumerate(times.tolist()):
+        for j in range(7):
+            rr.set_time("time", duration=t)
 
-        rr.send_columns(
-            f"obs/qpos/{i}",
-            indexes=[rr.TimeColumn("time", duration=times)],
-            columns=rr.Scalars.columns(scalars=qpos[:, i]),
-        )
+            rr.log(f"obs/qpos/{j}", rr.Scalars(scalars=obs["qpos"][i, j]))
 
-        rr.send_columns(
-            f"obs/qvel/{i}",
-            indexes=[rr.TimeColumn("time", duration=times)],
-            columns=rr.Scalars.columns(scalars=qvel[:, i]),
-        )
+            rr.log(f"obs/qvel/{j}", rr.Scalars(obs["qvel"][i, j]))
 
-    img = obs["wrist_img"].view(np.uint8)
+        rr.log("obs/wrist_img", rr.Image(obs["wrist_img"][i]))
 
-    format = rr.components.ImageFormat(
-        width=img.shape[2],
-        height=img.shape[1],
-        color_model="RGB",
-        channel_datatype="U8",
-    )
-    rr.log("obs/wrist_img", rr.Image.from_fields(format=format), static=True)
+        rr.log("obs/front_img", rr.Image(obs["front_img"][i]))
 
-    rr.send_columns(
-        "obs/wrist_img",
-        indexes=[rr.TimeColumn("time", duration=times)],
-        columns=rr.Image.columns(buffer=img.reshape(len(times), -1)),
-    )
+        for j in range(7):
+            rr.log(f"action/qpos/{j}", rr.Scalars(action["qpos"][i, j]))
 
-    img = obs["front_img"].view(np.uint8)
-
-    format = rr.components.ImageFormat(
-        width=img.shape[2],
-        height=img.shape[1],
-        color_model="RGB",
-        channel_datatype="U8",
-    )
-    rr.log("obs/front_img", rr.Image.from_fields(format=format), static=True)
-
-    rr.send_columns(
-        "obs/front_img",
-        indexes=[rr.TimeColumn("time", duration=times)],
-        columns=rr.Image.columns(buffer=img.reshape(len(times), -1)),
-    )
-
-    for i in range(7):
-        qpos = action["qpos"][:]
-
-        rr.send_columns(
-            f"action/qpos/{i}",
-            indexes=[rr.TimeColumn("time", duration=times)],
-            columns=rr.Scalars.columns(scalars=qpos[:, i]),
-        )
+        time.sleep(1e-3)
 
     blueprint = rrb.Grid(
         rrb.TimeSeriesView(

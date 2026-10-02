@@ -21,7 +21,8 @@ from .robots import PiperFollower
 @click.option("--urdf", default="piper")
 @click.option("--task_name", default="gripper_tcp")
 @click.option("--gripper_name", default="gripper")
-@click.option("--dt", default=1 / 450)
+@click.option("--hz", default=90)
+@click.option("--multiplier", default=5)
 @click.option("--ema", default=0.1)
 @click.option("--wrist-cam", type=int, required=True)
 @click.option("--front-cam", type=int, required=True)
@@ -32,11 +33,14 @@ def main(
     urdf: str = "piper",
     task_name: str = "gripper_tcp",
     gripper_name: str = "gripper",
-    dt: float = 1 / 450,
+    hz: int = 90,
+    multiplier: int = 5,
     ema: float = 0.1,
     wrist_cam: int = 2,
     front_cam: int = 0,
 ):
+    dt = 1 / (hz * multiplier)
+
     robot = PiperFollower(can, dt=dt)
     solver = Dynamics(urdf, effector_name=task_name, gripper_name=gripper_name, dt=dt)
     ee_planner = EffectorPlanner(dt, alpha=ema)
@@ -63,8 +67,6 @@ def main(
     q = Queue(maxsize=-1)
     msg_q = Queue(maxsize=-1)
 
-    sync_lock = Lock()
-
     quest = QuestThread(port)
 
     robot_home = np.eye(4)
@@ -81,11 +83,6 @@ def main(
         robot_home = solver.forward()
         ee_planner.set_start(robot_home)
         quest.set_anchor(quest_to_flange(payload["position"], payload["quaternion"]))
-
-    @quest.subscribe("idle")
-    def idle(msg):
-        if sync_lock.locked():
-            sync_lock.release()
 
     @quest.subscribe("follow")
     def follow(msg):
@@ -109,14 +106,8 @@ def main(
 
     stop_control = Event()
 
-    @schedule(interval=1 / 90)
+    @schedule(interval=1 / hz)
     def record_loop():
-        while sync_lock.locked():
-            time.sleep(1e-6)
-
-        if msg_q.empty():
-            return
-
         t = time.perf_counter()
         state = robot.get_state()
 
@@ -124,11 +115,15 @@ def main(
         front_img = front.latest_frame
 
         obs = {}
-        obs["timestamp"] = np.array([t], dtype=np.float64)
         obs.update(state)
+
+        obs["timestamp"] = np.array(t)
 
         obs["wrist_img"] = wrist_img
         obs["front_img"] = front_img
+
+        if msg_q.empty():
+            return
 
         msg = msg_q.get()
         if msg["type"] == "follow":
