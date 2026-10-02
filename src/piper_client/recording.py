@@ -1,4 +1,5 @@
 import threading
+import time
 from queue import Queue
 
 import numpy as np
@@ -38,7 +39,9 @@ class ZarrRecorder:
         action: dict[str, ArrayLike | dict[str, ArrayLike]],
     ):
         for name, x in action.items():
-            x = np.asarray(x)[None, :]
+            x = np.asarray(x)
+            if x.ndim > 1:
+                x = x[None, :]
 
             if name not in self.action:
                 compressors = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle")
@@ -60,13 +63,14 @@ class ZarrRecorder:
             if name not in self.obs:
                 compressors = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle")
 
-                self.obs.create_array(
+                z = self.obs.create_array(
                     name=name,
                     shape=x.shape,
                     dtype=x.dtype,
                     chunks=[1, *x.shape[1:]],
                     compressors=compressors,
                 )
+                z[:] = x
             else:
                 z = self.obs.get_array(name)
                 z.append(x)
@@ -145,5 +149,8 @@ class RecordThread(threading.Thread):
         self.start()
 
     def stop_thread(self):
+        while not self.q.empty():
+            time.sleep(1)
+
         self.stop_event.set()
         self.recorder.close()

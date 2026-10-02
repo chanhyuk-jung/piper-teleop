@@ -15,6 +15,7 @@ export class RobotSystem extends createSystem(
   },
 ) {
   private coupled = false;
+  private paused = false;
   private socket = new WebSocket(this.config.serverIp.value);
 
   init(): void {
@@ -40,23 +41,18 @@ export class RobotSystem extends createSystem(
     if (!pad || !raySpace) return;
 
     let msg = {
-      type: "",
+      type: "idle",
       delta: delta,
       timestamp: time,
       payload: {},
     };
 
-    const squeezed = pad.getButtonPressed("xr-standard-squeeze");
-
-    if (!this.coupled  && !squeezed) {
-      return;
-    }
-
-    if (this.coupled && squeezed) {
+    if (this.coupled && pad.getButtonPressed("xr-standard-squeeze")) {
       msg["type"] = "follow";
-    } else {
+    } else if (pad.getButtonUp("xr-standard-squeeze")) {
       this.coupled = false;
       msg["type"] = "pause";
+      this.paused = true;
     }
 
     if (pad.getButtonDown("xr-standard-squeeze")) {

@@ -255,13 +255,13 @@ class Bus:
             self.arm.move_mit(self.name_to_idx[name], pos[i], vel[i], kp, kd, t_ff)
 
     def read_joints(self) -> Joints:
-        timestamp: list[float] = []
-        position: list[float] = []
-        velocity: list[float] = []
-        torque: list[float] = []
-        current: list[float] = []
-
         def read():
+            timestamp: list[float] = []
+            position: list[float] = []
+            velocity: list[float] = []
+            torque: list[float] = []
+            current: list[float] = []
+
             motor_states = [
                 self.arm.get_motor_states(self.name_to_idx[name])
                 for name in self.joint_names
