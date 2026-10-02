@@ -60,7 +60,7 @@ def main(dataset, index, save):
         for j in range(7):
             rr.log(f"action/qpos/{j}", rr.Scalars(action["qpos"][i, j]))
 
-        time.sleep(1e-3)
+        time.sleep(1e-2)
 
     blueprint = rrb.Grid(
         rrb.TimeSeriesView(

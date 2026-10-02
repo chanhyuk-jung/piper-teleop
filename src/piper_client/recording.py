@@ -1,124 +1,112 @@
 import threading
 import time
 from queue import Queue
+from typing import cast
 
 import numpy as np
 import zarr
-from numpy.typing import ArrayLike
+from numpy.typing import ArrayLike, NDArray
 from zarr.codecs import BloscCodec
+from zarr.core.array_spec import ArrayConfigLike
 from zarr.storage import LocalStore
+
+
+def flatten_dict(d: dict, parent_key: str = "", sep: str = "/") -> dict:
+    items = []
+    for k, v in d.items():
+        new_key = f"{parent_key}{sep}{k}" if parent_key else k
+
+        if isinstance(v, dict):
+            items.extend(flatten_dict(v, new_key, sep=sep).items())
+        else:
+            items.append((new_key, v))
+
+    return dict(items)
 
 
 class ZarrRecorder:
     def __init__(self, path: str):
-        self.store = LocalStore(path)
-        self.root = zarr.group(store=self.store, overwrite=False)
+        self.root = zarr.group(store=path, overwrite=False)
 
-        if "episode_ends" not in self.root:
-            self.root.create_group("obs")
-            self.root.create_group("action")
+        self.length = self.end
 
-            self.root.create_array(
-                name="episode_ends", shape=(0,), chunks=(1,), dtype="int64"
-            )
+        self.paths = None
+        if "paths" in self.root.attrs:
+            self.paths = cast(list, self.root.attrs["paths"])
 
-        self.obs = self.root.get_group("obs")
-        self.action = self.root.get_group("action")
-        self.ends = self.root.get_array("episode_ends")
+    @property
+    def end(self):
+        end = np.array([0], dtype=np.int64)
 
-        self.end = np.array([0], dtype=np.int64)
+        if "episode_ends" in self.root:
+            z = self.root.get_array("episode_ends")
 
-        if self.ends.shape[0] > 0:
-            self.end = np.asarray([self.ends[-1]], dtype=np.int64)
+            if z.shape[0] > 0:
+                i = z.shape[0]
+                end = np.asarray(z[i - 1 : i], dtype=np.int64)
 
-        self.trim(int(self.end))
+        return end
 
-    def add(
-        self,
-        obs: dict[str, ArrayLike | dict[str, ArrayLike]],
-        action: dict[str, ArrayLike | dict[str, ArrayLike]],
-    ):
-        for name, x in action.items():
+    def add(self, nested: dict):
+        compressors = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle")
+
+        flat = flatten_dict(nested)
+
+        self.paths = list(flat.keys())
+        self.root.update_attributes({"paths": self.paths})
+
+        if set(flat.keys()) != set(self.paths):
+            raise RuntimeError
+
+        lengths = set()
+
+        for path, x in flat.items():
             x = np.asarray(x)
-            x = x[None, ...]
 
-            if name not in self.action.array_keys():
-                compressors = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle")
-
-                z = self.action.create_array(
-                    name=name,
+            if path not in self.root:
+                z = self.root.create_array(
+                    name=path,
                     shape=x.shape,
                     dtype=x.dtype,
-                    chunks=x.shape,
+                    chunks=[1, *x.shape[1:]],
                     compressors=compressors,
                 )
                 z[:] = x
             else:
-                z = self.action.get_array(name)
+                z = self.root.get_array(path)
                 z.append(x)
 
-        for name, x in obs.items():
-            x = np.asarray(x)
-            x = x[None, ...]
+            lengths.add(x.shape[0])
 
-            if name not in self.obs.array_keys():
-                compressors = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle")
+        if len(lengths) != 1:
+            raise RuntimeError
 
-                z = self.obs.create_array(
-                    name=name,
-                    shape=x.shape,
-                    dtype=x.dtype,
-                    chunks=x.shape,
-                    compressors=compressors,
-                )
-                z[:] = x
-            else:
-                z = self.obs.get_array(name)
-                z.append(x)
-
-        self.end += 1
+        self.length += int(lengths.pop())
 
     def finish(self):
-        if self.ends.shape[0] == 0:
-            end = 0
-        else:
-            end = self.ends[-1]
-
-        if self.end == 0 or self.end == end:
+        if self.end == self.length:
             return
 
-        self.ends.append(self.end)
-
-    def check(self):
-        length = 0
-        if self.ends.shape[0] > 0:
-            length = self.ends[-1]
-
-        for name in self.action:
-            if length != self.action.get_array(name).shape[0]:
-                return False
-
-        for name in self.obs:
-            if length != self.obs.get_array(name).shape[0]:
-                return False
-
-        return True
-
-    def trim(self, length: int):
-        for name in self.action:
-            x = self.action.get_array(name)
-            x.resize([length, *x.shape[1:]])
-
-        for name in self.obs:
-            x = self.obs.get_array(name)
-            x.resize([length, *x.shape[1:]])
+        if "episode_ends" not in self.root:
+            z = self.root.create_array(
+                name="episode_ends",
+                shape=(1,),
+                dtype=np.int64,
+                chunks=(1,),
+            )
+            z[:] = self.length
+        else:
+            z = self.root.get_array("episode_ends")
+            z.append(self.length)
 
     def close(self):
-        self.store.close()
+        for path in cast(list, self.root.attrs["paths"]):
+            z = self.root.get_array(path)
+            z.resize((int(self.end), *z.shape[1:]))
 
 
 class RecordThread(threading.Thread):
-    def __init__(self, recorder: ZarrRecorder):
+    def __init__(self, recorder: ZarrRecorder, bufsize: int = 128):
         super().__init__()
         self.recorder = recorder
 
@@ -126,19 +114,40 @@ class RecordThread(threading.Thread):
 
         self.stop_event = threading.Event()
 
+        self.buffer: list[dict[str, dict[str, ArrayLike]]] = []
+        self.bufsize = bufsize
+
     def run(self):
         while not self.stop_event.is_set():
             if self.q.empty():
-                continue
+                time.sleep(1e-3)
 
             val = self.q.get()
 
             if val is None:
+                if len(self.buffer) > 0:
+                    self.flush()
+
                 self.recorder.finish()
             else:
                 obs, action = val
+                self.buffer.append({"obs": obs, "action": action})
 
-                self.recorder.add(obs, action)
+                if len(self.buffer) >= self.bufsize:
+                    self.flush()
+
+    def flush(self):
+        flat_buffer = [flatten_dict(buf) for buf in self.buffer]
+
+        paths = flat_buffer[0].keys()
+
+        stacked = {}
+        for path in paths:
+            stacked[path] = np.stack([buf[path] for buf in flat_buffer])
+
+        self.recorder.add(stacked)
+
+        self.buffer = []
 
     def record(self, obs, action):
         self.q.put((obs, action))
@@ -147,6 +156,7 @@ class RecordThread(threading.Thread):
         self.q.put(None)
 
     def start_thread(self):
+        self.daemon = True
         self.start()
 
     def stop_thread(self):
@@ -154,4 +164,8 @@ class RecordThread(threading.Thread):
             time.sleep(1)
 
         self.stop_event.set()
+
+        if len(self.buffer) > 0:
+            self.flush()
+
         self.recorder.close()

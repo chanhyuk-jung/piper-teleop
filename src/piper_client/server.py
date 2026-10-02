@@ -1,5 +1,5 @@
 import time
-from queue import Queue
+from queue import Empty, Queue
 from threading import Event, Lock
 
 import click
@@ -34,7 +34,7 @@ def main(
     task_name: str = "gripper_tcp",
     gripper_name: str = "gripper",
     hz: int = 90,
-    multiplier: int = 5,
+    multiplier: int = 10,
     ema: float = 0.1,
     wrist_cam: int = 2,
     front_cam: int = 0,
@@ -57,8 +57,8 @@ def main(
 
     print("cameras started")
 
-    recorder = ZarrRecorder(path=data_path)
-    record_thread = RecordThread(recorder)
+    recorder = ZarrRecorder(data_path)
+    record_thread = RecordThread(recorder, bufsize=4)
 
     record_thread.start_thread()
 
@@ -91,7 +91,10 @@ def main(
     @quest.subscribe("pause")
     def pause(_):
         while not q.empty():
-            q.get_nowait()
+            try:
+                q.get_nowait()
+            except Empty:
+                return
 
     @quest.subscribe("go_home")
     def go_home(msg):
@@ -126,6 +129,7 @@ def main(
             return
 
         msg = msg_q.get()
+
         if msg["type"] == "follow":
             payload = msg["payload"]
 
