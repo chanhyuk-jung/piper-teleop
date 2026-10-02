@@ -184,14 +184,16 @@ def main(
         run_loop(stop_control)
     except KeyboardInterrupt:
         print("closing server...")
+
         stop_control.set()
 
         wrist.stop_thread()
         front.stop_thread()
         quest.stop_thread()
-        record_thread.stop_thread()
 
-        record_thread.join()
+        robot.move([0.0] * 7)
+
+        record_thread.stop_thread()
 
 
 if __name__ == "__main__":
