@@ -5,10 +5,8 @@ from typing import cast
 
 import numpy as np
 import zarr
-from numpy.typing import ArrayLike, NDArray
+from numpy.typing import ArrayLike
 from zarr.codecs import BloscCodec
-from zarr.core.array_spec import ArrayConfigLike
-from zarr.storage import LocalStore
 
 
 def flatten_dict(d: dict, parent_key: str = "", sep: str = "/") -> dict:

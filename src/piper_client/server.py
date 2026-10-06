@@ -1,6 +1,6 @@
 import time
 from queue import Empty, Queue
-from threading import Event, Lock
+from threading import Event
 
 import click
 import numpy as np
@@ -55,14 +55,10 @@ def main(
     wrist.start_thread()
     front.start_thread()
 
-    print("cameras started")
-
     recorder = ZarrRecorder(data_path)
     record_thread = RecordThread(recorder, bufsize=4)
 
     record_thread.start_thread()
-
-    print("recorder started")
 
     q = Queue(maxsize=-1)
     msg_q = Queue(maxsize=-1)
@@ -198,6 +194,7 @@ def main(
         robot.move([0.0] * 7)
 
         record_thread.stop_thread()
+        robot.close()
 
 
 if __name__ == "__main__":
