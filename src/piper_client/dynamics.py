@@ -46,13 +46,13 @@ class Dynamics:
         effector_task.T_world_frame = solver.robot.get_T_world_frame(effector_name)
 
         posture = solver.add_joints_task()
-        posture.set_joints({name: 0.0 for name in self.joint_names})
+        posture.set_joints(dict.fromkeys(self.joint_names, 0.0))
         posture.configure("posture", "soft", 1e-4)
 
     def set_joints(self, joints: ArrayLike) -> None:
         joints = np.asarray(joints, dtype=np.float64)
 
-        for name, joint in zip(self.joint_names[: len(joints)], joints):
+        for name, joint in zip(self.joint_names[: len(joints)], joints, strict=True):
             self.robot.set_joint(name, float(joint))
 
         self.robot.update_kinematics()
