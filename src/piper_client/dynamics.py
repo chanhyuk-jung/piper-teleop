@@ -17,7 +17,7 @@ class Dynamics:
         gripper_name: str,
         dt: float = 0.001,
         pos_weight: float = 1.0,
-        rot_weight: float = 0.1,
+        rot_weight: float = 1e-2,
     ) -> None:
         super().__init__()
 

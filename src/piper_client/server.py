@@ -23,9 +23,10 @@ from .robots import PiperFollower
 @click.option("--gripper_name", default="gripper")
 @click.option("--hz", default=90)
 @click.option("--multiplier", default=5)
-@click.option("--ema", default=0.1)
+@click.option("--ema", default=0.5)
 @click.option("--wrist-cam", type=int, required=True)
 @click.option("--front-cam", type=int, required=True)
+@click.option("--bufsize", default=128)
 def main(
     data_path: str,
     port=4000,
@@ -35,9 +36,10 @@ def main(
     gripper_name: str = "gripper",
     hz: int = 90,
     multiplier: int = 10,
-    ema: float = 0.1,
+    ema: float = 0.5,
     wrist_cam: int = 2,
     front_cam: int = 0,
+    bufsize: int = 128,
 ):
     dt = 1 / (hz * multiplier)
 
@@ -56,7 +58,7 @@ def main(
     front.start_thread()
 
     recorder = ZarrRecorder(data_path)
-    record_thread = RecordThread(recorder, bufsize=4)
+    record_thread = RecordThread(recorder, bufsize=bufsize)
 
     record_thread.start_thread()
 
@@ -107,7 +109,7 @@ def main(
 
     @schedule(interval=1 / hz)
     def record_loop():
-        t = time.perf_counter()
+        t0 = time.perf_counter()
         state = robot.get_state()
 
         wrist_img = wrist.latest_frame
@@ -116,7 +118,7 @@ def main(
         obs = {}
         obs.update(state)
 
-        obs["timestamp"] = np.array(t)
+        obs["timestamp"] = np.array(t0)
 
         obs["wrist_img"] = wrist_img
         obs["front_img"] = front_img
@@ -154,6 +156,8 @@ def main(
             qpos = solver.get_joints()
             action = {"qpos": np.append(qpos[:6], ee)}
 
+            obs["dt"] = time.perf_counter() - t0
+
             record_thread.record(obs, action)
 
         elif msg["type"] == "go_home":
@@ -169,6 +173,8 @@ def main(
 
             action = {"qpos": waypoint}
             solver.set_joints(waypoint)
+
+            obs["dt"] = time.perf_counter() - t0
 
             record_thread.record(obs, action)
 

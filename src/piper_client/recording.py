@@ -6,7 +6,8 @@ from typing import cast
 import numpy as np
 import zarr
 from numpy.typing import ArrayLike
-from zarr.codecs import BloscCodec
+
+chunk_size = 128
 
 
 def flatten_dict(d: dict, parent_key: str = "", sep: str = "/") -> dict:
@@ -46,8 +47,6 @@ class ZarrRecorder:
         return end
 
     def add(self, nested: dict):
-        compressors = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle")
-
         flat = flatten_dict(nested)
 
         self.paths = list(flat.keys())
@@ -66,8 +65,7 @@ class ZarrRecorder:
                     name=path,
                     shape=x.shape,
                     dtype=x.dtype,
-                    chunks=[1, *x.shape[1:]],
-                    compressors=compressors,
+                    chunks=[chunk_size, *x.shape[1:]],
                 )
                 z[:] = x
             else:
@@ -90,7 +88,7 @@ class ZarrRecorder:
                 name="episode_ends",
                 shape=(1,),
                 dtype=np.int64,
-                chunks=(1,),
+                chunks=(chunk_size,),
             )
             z[:] = self.length
         else:
