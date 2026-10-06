@@ -15,18 +15,15 @@ export class RobotSystem extends createSystem(
   },
 ) {
   private coupled = false;
+  private wait = true;
   private socket = new WebSocket(this.config.serverIp.value);
 
   init(): void {
     this.socket.addEventListener("message", ({ data }) => {
       const event = JSON.parse(data);
 
-      if (event === "VIBRATE") {
-        const pad = this.input.xr.gamepads.right;
-
-        if (!pad) return;
-
-        pad.gamepad.vibrationActuator.pulse(0.2, 50);
+      if (event["type"] === "ready") {
+        this.wait = false;
       }
     });
   }
@@ -40,7 +37,7 @@ export class RobotSystem extends createSystem(
     if (!pad || !raySpace) return;
 
     let msg = {
-      type: "",
+      type: "idle",
       delta: delta,
       timestamp: time,
       payload: {},
@@ -65,6 +62,7 @@ export class RobotSystem extends createSystem(
 
     if (pad.getButtonUp("a-button")) {
       msg["type"] = "save";
+      this.wait = true;
     }
 
     if (this.coupled) {
@@ -81,8 +79,12 @@ export class RobotSystem extends createSystem(
       };
     }
 
-    if (msg["type"] !== "") {
-      this.socket.send(JSON.stringify(msg));
+    if (this.wait) {
+      pad.gamepad.vibrationActuator.pulse(1.0, 1);
+
+      msg["type"] = "waiting";
     }
+
+    this.socket.send(JSON.stringify(msg));
   }
 }

@@ -151,6 +151,9 @@ class RecordThread(threading.Thread):
     def save(self):
         self.q.put(None)
 
+    def empty(self):
+        return self.q.empty()
+
     def start_thread(self):
         self.daemon = True
         self.start()

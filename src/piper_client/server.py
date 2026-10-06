@@ -1,3 +1,4 @@
+import json
 import time
 from queue import Empty, Queue
 from threading import Event
@@ -5,6 +6,7 @@ from threading import Event
 import click
 import numpy as np
 from ischedule import run_loop, schedule
+from websockets import ServerConnection
 
 from .camera import CameraThread, open_camera
 from .dynamics import Dynamics
@@ -68,9 +70,10 @@ def main(
     quest = QuestThread(port)
 
     robot_home = np.eye(4)
+    ready = False
 
     @quest.subscribe("start")
-    def update_home(msg):
+    async def update_home(_, msg):
         nonlocal robot_home
 
         qpos = robot.get_state()["qpos"]
@@ -83,11 +86,11 @@ def main(
         quest.set_anchor(quest_to_flange(payload["position"], payload["quaternion"]))
 
     @quest.subscribe("follow")
-    def follow(msg):
+    async def follow(_, msg):
         msg_q.put(msg)
 
     @quest.subscribe("pause")
-    def pause(_):
+    async def pause(*_):
         while not q.empty():
             try:
                 q.get_nowait()
@@ -95,12 +98,25 @@ def main(
                 return
 
     @quest.subscribe("go_home")
-    def go_home(msg):
+    async def go_home(_, msg):
         msg_q.put(msg)
 
     @quest.subscribe("save")
-    def save(_):
+    async def save(*_):
+        nonlocal ready
+
+        ready = False
+
         record_thread.save()
+
+    @quest.subscribe("waiting")
+    async def idle(ws: ServerConnection, _):
+        nonlocal ready
+
+        if record_thread.empty():
+            await ws.send(json.dumps({"type": "ready"}))
+
+            ready = True
 
     quest.start_thread()
     print("server started")
@@ -127,6 +143,9 @@ def main(
             return
 
         msg = msg_q.get()
+
+        if not ready:
+            return
 
         if msg["type"] == "follow":
             payload = msg["payload"]

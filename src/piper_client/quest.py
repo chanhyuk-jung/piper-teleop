@@ -52,8 +52,9 @@ class QuestThread(threading.Thread):
             if event not in self.listeners:
                 continue
 
-            for fn in self.listeners[event]:
-                fn(msg)
+            async with asyncio.TaskGroup() as tg:
+                for fn in self.listeners[event]:
+                    tg.create_task(fn(websocket, msg))
 
     async def async_serve(self):
         self.server = await serve(self.handler, host="0.0.0.0", port=self.port)
