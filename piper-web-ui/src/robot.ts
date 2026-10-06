@@ -5,7 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import { createSystem, Types, Vector3, Quaternion } from "@iwsdk/core";
+import { createSystem, Types } from "@iwsdk/core";
 
 export class RobotSystem extends createSystem(
   {},
@@ -16,6 +16,7 @@ export class RobotSystem extends createSystem(
 ) {
   private coupled = false;
   private wait = true;
+
   private socket = new WebSocket(this.config.serverIp.value);
 
   init(): void {
@@ -45,7 +46,7 @@ export class RobotSystem extends createSystem(
 
     if (this.coupled && pad.getButtonPressed("xr-standard-squeeze")) {
       msg["type"] = "follow";
-    } else if (pad.getButtonUp("xr-standard-squeeze")) {
+    } else if (this.coupled && pad.getButtonUp("xr-standard-squeeze")) {
       this.coupled = false;
       msg["type"] = "pause";
     }
@@ -62,15 +63,14 @@ export class RobotSystem extends createSystem(
 
     if (pad.getButtonUp("a-button")) {
       msg["type"] = "save";
+      this.socket.send(JSON.stringify(msg));
+
       this.wait = true;
     }
 
     if (this.coupled) {
-      const currentPos = new Vector3();
-      const currentQuat = new Quaternion();
-
-      raySpace.getWorldPosition(currentPos);
-      raySpace.getWorldQuaternion(currentQuat);
+      const currentPos = raySpace.position;
+      const currentQuat = raySpace.quaternion;
 
       msg["payload"] = {
         position: [currentPos.x, currentPos.y, currentPos.z],
@@ -80,7 +80,7 @@ export class RobotSystem extends createSystem(
     }
 
     if (this.wait) {
-      pad.gamepad.vibrationActuator.pulse(1.0, 1);
+      pad.gamepad.vibrationActuator.pulse(1.0, 0.4);
 
       msg["type"] = "waiting";
     }

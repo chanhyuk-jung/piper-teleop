@@ -95,8 +95,11 @@ class ZarrRecorder:
             z = self.root.get_array("episode_ends")
             z.append(self.length)
 
-    def close(self):
+    def trim(self):
         for path in cast(list, self.root.attrs["paths"]):
+            if path == "episode_ends":
+                continue
+
             z = self.root.get_array(path)
             z.resize((int(self.end), *z.shape[1:]))
 
@@ -132,6 +135,8 @@ class RecordThread(threading.Thread):
                 if len(self.buffer) >= self.bufsize:
                     self.flush()
 
+            self.q.task_done()
+
     def flush(self):
         flat_buffer = [flatten_dict(buf) for buf in self.buffer]
 
@@ -154,6 +159,9 @@ class RecordThread(threading.Thread):
     def empty(self):
         return self.q.empty()
 
+    def cancel(self):
+        self.recorder.trim()
+
     def start_thread(self):
         self.daemon = True
         self.start()
@@ -167,4 +175,4 @@ class RecordThread(threading.Thread):
         if len(self.buffer) > 0:
             self.flush()
 
-        self.recorder.close()
+        self.recorder.trim()

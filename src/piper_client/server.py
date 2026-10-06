@@ -1,6 +1,6 @@
 import json
 import time
-from queue import Empty, Queue
+from collections import deque
 from threading import Event
 
 import click
@@ -25,7 +25,7 @@ from .robots import PiperFollower
 @click.option("--gripper_name", default="gripper")
 @click.option("--hz", default=90)
 @click.option("--multiplier", default=5)
-@click.option("--ema", default=0.5)
+@click.option("--ema", default=0.4)
 @click.option("--wrist-cam", type=int, required=True)
 @click.option("--front-cam", type=int, required=True)
 @click.option("--bufsize", default=128)
@@ -64,8 +64,8 @@ def main(
 
     record_thread.start_thread()
 
-    q = Queue(maxsize=-1)
-    msg_q = Queue(maxsize=-1)
+    q = deque(maxlen=multiplier)
+    msg_q = deque(maxlen=32)
 
     quest = QuestThread(port)
 
@@ -73,7 +73,7 @@ def main(
     ready = False
 
     @quest.subscribe("start")
-    async def update_home(_, msg):
+    def update_home(msg):
         nonlocal robot_home
 
         qpos = robot.get_state()["qpos"]
@@ -86,34 +86,37 @@ def main(
         quest.set_anchor(quest_to_flange(payload["position"], payload["quaternion"]))
 
     @quest.subscribe("follow")
-    async def follow(_, msg):
-        msg_q.put(msg)
+    def follow(msg):
+        msg_q.append(msg)
 
     @quest.subscribe("pause")
-    async def pause(*_):
-        while not q.empty():
-            try:
-                q.get_nowait()
-            except Empty:
-                return
+    def pause(_):
+        nonlocal ready
+
+        q.clear()
+
+        record_thread.cancel()
+        robot.move_to_zero()
 
     @quest.subscribe("go_home")
-    async def go_home(_, msg):
-        msg_q.put(msg)
+    def go_home(msg):
+        msg_q.append(msg)
 
     @quest.subscribe("save")
-    async def save(*_):
+    def save(_):
         nonlocal ready
 
         ready = False
 
         record_thread.save()
 
-    @quest.subscribe("waiting")
+    @quest.async_subscribe("waiting")
     async def idle(ws: ServerConnection, _):
         nonlocal ready
 
         if record_thread.empty():
+            record_thread.q.join()
+
             await ws.send(json.dumps({"type": "ready"}))
 
             ready = True
@@ -139,10 +142,10 @@ def main(
         obs["wrist_img"] = wrist_img
         obs["front_img"] = front_img
 
-        if msg_q.empty():
+        if len(msg_q) == 0:
             return
 
-        msg = msg_q.get()
+        msg = msg_q.popleft()
 
         if not ready:
             return
@@ -170,7 +173,7 @@ def main(
             for waypoint, vel in ee_planner.plan(task_frame, msg["delta"]):
                 qpos = solver.inverse(waypoint, vel=vel)
 
-                q.put(np.append(qpos[:6], ee))
+                q.append(np.append(qpos[:6], ee))
 
             qpos = solver.get_joints()
             action = {"qpos": np.append(qpos[:6], ee)}
@@ -188,7 +191,7 @@ def main(
 
             q_planner.set_start(qpos)
             for waypoint in q_planner.plan(end, msg["delta"]):
-                q.put(waypoint)
+                q.append(waypoint)
 
             action = {"qpos": waypoint}
             solver.set_joints(waypoint)
@@ -199,10 +202,10 @@ def main(
 
     @schedule(interval=dt)
     def control_loop():
-        if q.empty():
+        if len(q) == 0:
             return
 
-        action = q.get()
+        action = q.popleft()
         robot.move(action)
 
     try:
@@ -216,7 +219,7 @@ def main(
         front.stop_thread()
         quest.stop_thread()
 
-        robot.move([0.0] * 7)
+        robot.move_to_zero()
 
         record_thread.stop_thread()
         robot.close()

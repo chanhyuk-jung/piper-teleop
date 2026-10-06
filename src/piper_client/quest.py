@@ -31,6 +31,7 @@ class QuestThread(threading.Thread):
         self.server = None
 
         self.listeners = {}
+        self.async_listeners = {}
 
         self.anchor = np.eye(4)
 
@@ -43,18 +44,27 @@ class QuestThread(threading.Thread):
 
         return wrapper
 
+    def async_subscribe(self, name: str):
+        def wrapper(fn) -> None:
+            if name not in self.listeners:
+                self.async_listeners[name] = [fn]
+            else:
+                self.async_listeners[name].append(fn)
+
+        return wrapper
+
     async def handler(self, websocket: ServerConnection):
         async for message in websocket:
             msg = json.loads(message)
 
             event = msg["type"]
 
-            if event not in self.listeners:
-                continue
-
             async with asyncio.TaskGroup() as tg:
-                for fn in self.listeners[event]:
+                for fn in self.async_listeners.get(event, []):
                     tg.create_task(fn(websocket, msg))
+
+                for fn in self.listeners.get(event, []):
+                    fn(msg)
 
     async def async_serve(self):
         self.server = await serve(self.handler, host="0.0.0.0", port=self.port)
