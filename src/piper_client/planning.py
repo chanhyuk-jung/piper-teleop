@@ -4,7 +4,7 @@ from numpy.typing import ArrayLike
 
 
 class EffectorPlanner:
-    def __init__(self, dt, alpha: float = 0.2):
+    def __init__(self, dt, alpha: float = 1.0):
         self.dt = dt
         self.alpha = alpha
 
@@ -18,6 +18,7 @@ class EffectorPlanner:
         vel = (end[:3, -1] - self.start[:3, -1]) / dt
 
         times = np.linspace(0, 1, max(int(dt / self.dt), 2))
+        times = times[1:]
 
         for t in times:
             waypoint = placo.interpolate_frames(self.start, end, t)
@@ -28,7 +29,7 @@ class EffectorPlanner:
 
 
 class JointPlanner:
-    def __init__(self, dt, alpha: float = 0.2):
+    def __init__(self, dt, alpha: float = 1.0):
         self.dt = dt
         self.alpha = alpha
 

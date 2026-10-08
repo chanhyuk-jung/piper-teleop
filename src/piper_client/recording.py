@@ -18,17 +18,15 @@ class VideoWriter:
         self.container = av.open(path, mode="w")
 
         options = {
-            "crf": "21",
-            "me": "umh",
-            "subme": "9",
-            "aq-mode": "2",
-            "no-fast-pskip": "1",
-            "ref": "4",
+            "crf": "22",
+            "preset": "6",
+            "keyint": "10s",
+            "tune": "0",
+            "scd": "1",
+            "scm": "0",
         }
-        options["keyint"] = str(fps * 10)
-        options["bframes"] = "8"
 
-        self.stream = self.container.add_stream("h264", rate=fps, options=options)
+        self.stream = self.container.add_stream("av1", rate=fps, options=options)
 
         self.path = path
 
@@ -203,10 +201,8 @@ class RecordThread(Thread):
 
     def run(self):
         while not self.stop_event.is_set():
-            while self.lock.locked():
-                time.sleep(1e-6)
-
-            self._record_loop()
+            with self.lock:
+                self._record_loop()
 
     def _record_loop(self):
         if len(self.q) == 0:
@@ -266,7 +262,7 @@ class RecordThread(Thread):
 
             self.recorder.trim()
 
-        self._ready = True
+            self._ready = True
 
     def ready(self):
         return self._ready

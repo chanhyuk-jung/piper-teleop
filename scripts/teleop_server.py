@@ -26,15 +26,19 @@ def serve_teleop(
     port=4000,
     hz: int = 90,
     multiplier: int = 10,
-    ema: float = 0.5,
+    ema: float = 0.3,
+    gripper_ema: float = 0.2,
     bufsize: int = 128,
 ):
     dt = 1 / (hz * multiplier)
 
     robot = PiperFollower(can, dt=dt)
     solver = Dynamics(urdf, effector_name=task_name, gripper_name=gripper_name, dt=dt)
+
     ee_planner = EffectorPlanner(dt, alpha=ema)
     q_planner = JointPlanner(dt, alpha=1.0)
+
+    gripper_planner = JointPlanner(dt, alpha=gripper_ema)
 
     wrist_cap = open_camera(wrist_cam)
     front_cap = open_camera(front_cam)
@@ -71,8 +75,11 @@ def serve_teleop(
         payload = msg["payload"]
 
         robot_home = solver.forward()
+
         ee_planner.set_start(robot_home)
         quest.set_anchor(quest_to_flange(payload["position"], payload["quaternion"]))
+
+        gripper_planner.set_start(np.array(qpos[6]))
 
         cancel_event.clear()
 
@@ -149,10 +156,16 @@ def serve_teleop(
 
             ee = gripper ** (1 / 2) * 0.1
 
-            for waypoint, vel in ee_planner.plan(task_frame, msg["delta"]):
-                qpos = solver.inverse(waypoint, vel=vel)
+            ee_traj = ee_planner.plan(task_frame, dt=msg["delta"])
+            gripper_traj = gripper_planner.plan(np.array(ee), dt=msg["delta"])
 
-                q.append(np.append(qpos[:6], ee))
+            for (waypoint, vel), gripper_t in zip(ee_traj, gripper_traj, strict=True):
+                qpos = solver.inverse(waypoint, vel=vel)
+                qpos = qpos[:6]
+
+                qpos = np.append(qpos, gripper_t)
+
+                q.append(qpos)
 
             qpos = solver.get_joints()
             action = {"qpos": np.append(qpos[:6], ee)}
