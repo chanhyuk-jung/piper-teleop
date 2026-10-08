@@ -1,11 +1,11 @@
 import threading
 import time
-from queue import Queue
+from collections import deque
+from threading import Lock, Thread
 from typing import cast
 
 import numpy as np
 import zarr
-from numpy.typing import ArrayLike
 
 chunk_size = 128
 
@@ -97,82 +97,104 @@ class ZarrRecorder:
 
     def trim(self):
         for path in cast(list, self.root.attrs["paths"]):
-            if path == "episode_ends":
-                continue
-
             z = self.root.get_array(path)
             z.resize((int(self.end), *z.shape[1:]))
 
 
-class RecordThread(threading.Thread):
+class RecordThread(Thread):
+    _ready = True
+
     def __init__(self, recorder: ZarrRecorder, bufsize: int = 128):
         super().__init__()
         self.recorder = recorder
 
-        self.q = Queue(maxsize=-1)
+        self.q = deque()
+        self.lock = Lock()
 
         self.stop_event = threading.Event()
 
-        self.buffer: list[dict[str, dict[str, ArrayLike]]] = []
+        self.buffer = []
         self.bufsize = bufsize
+
+        self.keys = set()
+        if self.recorder.paths is not None:
+            self.keys = set(self.recorder.paths)
 
     def run(self):
         while not self.stop_event.is_set():
-            if self.q.empty():
-                time.sleep(1e-3)
+            while self.lock.locked():
+                time.sleep(1e-6)
 
-            val = self.q.get()
+            self._record_loop()
 
-            if val is None:
-                if len(self.buffer) > 0:
-                    self.flush()
+    def _record_loop(self):
+        if len(self.q) == 0:
+            time.sleep(1e-3)
+            return
 
-                self.recorder.finish()
-            else:
-                obs, action = val
-                self.buffer.append({"obs": obs, "action": action})
+        msg = self.q.popleft()
 
-                if len(self.buffer) >= self.bufsize:
-                    self.flush()
+        event = msg["event"]
 
-            self.q.task_done()
+        if event == "record":
+            flat = flatten_dict(msg["data"])
+
+            if len(self.keys) == 0:
+                self.keys = set(flat.keys())
+
+            if set(flat.keys()) != self.keys:
+                raise ValueError
+
+            self.buffer.append(flat)
+
+            if len(self.buffer) >= self.bufsize:
+                self.flush()
+
+        elif event == "save":
+            if len(self.buffer) > 0:
+                self.flush()
+
+            self.recorder.finish()
+
+            self._ready = True
 
     def flush(self):
-        flat_buffer = [flatten_dict(buf) for buf in self.buffer]
+        if self.stop_event.is_set():
+            return
 
-        paths = flat_buffer[0].keys()
-
-        stacked = {}
-        for path in paths:
-            stacked[path] = np.stack([buf[path] for buf in flat_buffer])
+        stacked = {
+            key: np.stack([flat[key] for flat in self.buffer]) for key in self.keys
+        }
 
         self.recorder.add(stacked)
 
         self.buffer = []
 
     def record(self, obs, action):
-        self.q.put((obs, action))
+        self._ready = False
+
+        self.q.append({"event": "record", "data": {"obs": obs, "action": action}})
 
     def save(self):
-        self.q.put(None)
-
-    def empty(self):
-        return self.q.empty()
+        self.q.append({"event": "save"})
 
     def cancel(self):
-        self.recorder.trim()
+        with self.lock:
+            self.q.clear()
+            self.buffer = []
+
+            self.recorder.trim()
+
+        self._ready = True
+
+    def ready(self):
+        return self._ready
 
     def start_thread(self):
         self.daemon = True
         self.start()
 
     def stop_thread(self):
-        while not self.q.empty():
-            time.sleep(1)
-
         self.stop_event.set()
-
-        if len(self.buffer) > 0:
-            self.flush()
 
         self.recorder.trim()

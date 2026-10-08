@@ -1,17 +1,12 @@
 import time
 
-import click
 import numpy as np
 import rerun as rr
 import rerun.blueprint as rrb
 import zarr
 
 
-@click.command()
-@click.option("--dataset", default="data")
-@click.option("--index", default=0)
-@click.option("--save", is_flag=True)
-def main(dataset, index, save):
+def main(dataset: str, index: int = 0, save: bool = False):
     root = zarr.group(dataset)
 
     ends = root.get_array("episode_ends")[:]
@@ -102,4 +97,6 @@ def main(dataset, index, save):
 
 
 if __name__ == "__main__":
-    main()
+    import tyro
+
+    tyro.cli(main)

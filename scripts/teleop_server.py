@@ -1,46 +1,32 @@
 import json
 import time
 from collections import deque
-from threading import Event
+from threading import Event, Lock
 
-import click
 import numpy as np
 from ischedule import run_loop, schedule
 from websockets import ServerConnection
 
-from .camera import CameraThread, open_camera
-from .dynamics import Dynamics
-from .planning import EffectorPlanner, JointPlanner
-from .quest import QuestThread, quest_to_flange
-from .recording import RecordThread, ZarrRecorder
-from .robots import PiperFollower
+from piper_client.camera import CameraThread, open_camera
+from piper_client.dynamics import Dynamics
+from piper_client.planning import EffectorPlanner, JointPlanner
+from piper_client.quest import QuestThread, quest_to_flange
+from piper_client.recording import RecordThread, ZarrRecorder
+from piper_client.robots import PiperFollower
 
 
-@click.command()
-@click.option("--data-path", type=str, required=True)
-@click.option("--port", default=4000)
-@click.option("--can", default="can0")
-@click.option("--urdf", default="piper")
-@click.option("--task_name", default="gripper_tcp")
-@click.option("--gripper_name", default="gripper")
-@click.option("--hz", default=90)
-@click.option("--multiplier", default=5)
-@click.option("--ema", default=0.4)
-@click.option("--wrist-cam", type=int, required=True)
-@click.option("--front-cam", type=int, required=True)
-@click.option("--bufsize", default=128)
-def main(
+def serve_teleop(
     data_path: str,
+    can: str,
+    urdf: str,
+    task_name: str,
+    gripper_name: str,
+    wrist_cam: int,
+    front_cam: int,
     port=4000,
-    can: str = "can0",
-    urdf: str = "piper",
-    task_name: str = "gripper_tcp",
-    gripper_name: str = "gripper",
     hz: int = 90,
     multiplier: int = 10,
     ema: float = 0.5,
-    wrist_cam: int = 2,
-    front_cam: int = 0,
     bufsize: int = 128,
 ):
     dt = 1 / (hz * multiplier)
@@ -60,17 +46,20 @@ def main(
     front.start_thread()
 
     recorder = ZarrRecorder(data_path)
-    record_thread = RecordThread(recorder, bufsize=bufsize)
+    record_thread = RecordThread(recorder, bufsize)
 
     record_thread.start_thread()
 
     q = deque(maxlen=multiplier)
+    lock = Lock()
+
     msg_q = deque(maxlen=32)
+
+    cancel_event = Event()
 
     quest = QuestThread(port)
 
     robot_home = np.eye(4)
-    ready = False
 
     @quest.subscribe("start")
     def update_home(msg):
@@ -85,15 +74,18 @@ def main(
         ee_planner.set_start(robot_home)
         quest.set_anchor(quest_to_flange(payload["position"], payload["quaternion"]))
 
+        cancel_event.clear()
+
     @quest.subscribe("follow")
     def follow(msg):
         msg_q.append(msg)
 
     @quest.subscribe("pause")
     def pause(_):
-        nonlocal ready
+        cancel_event.set()
 
-        q.clear()
+        with lock:
+            q.clear()
 
         record_thread.cancel()
         robot.move_to_zero()
@@ -104,22 +96,12 @@ def main(
 
     @quest.subscribe("save")
     def save(_):
-        nonlocal ready
-
-        ready = False
-
         record_thread.save()
 
     @quest.async_subscribe("waiting")
     async def idle(ws: ServerConnection, _):
-        nonlocal ready
-
-        if record_thread.empty():
-            record_thread.q.join()
-
+        if record_thread.ready():
             await ws.send(json.dumps({"type": "ready"}))
-
-            ready = True
 
     quest.start_thread()
     print("server started")
@@ -142,13 +124,10 @@ def main(
         obs["wrist_img"] = wrist_img
         obs["front_img"] = front_img
 
-        if len(msg_q) == 0:
+        if len(msg_q) == 0 or cancel_event.is_set():
             return
 
         msg = msg_q.popleft()
-
-        if not ready:
-            return
 
         if msg["type"] == "follow":
             payload = msg["payload"]
@@ -178,10 +157,6 @@ def main(
             qpos = solver.get_joints()
             action = {"qpos": np.append(qpos[:6], ee)}
 
-            obs["dt"] = time.perf_counter() - t0
-
-            record_thread.record(obs, action)
-
         elif msg["type"] == "go_home":
             qpos = np.asarray(solver.get_joints()[:7], dtype=np.float64)
             home = np.zeros(7)
@@ -196,16 +171,18 @@ def main(
             action = {"qpos": waypoint}
             solver.set_joints(waypoint)
 
-            obs["dt"] = time.perf_counter() - t0
+        obs["dt"] = np.array(time.perf_counter() - t0)
 
-            record_thread.record(obs, action)
+        record_thread.record(obs, action)
 
     @schedule(interval=dt)
     def control_loop():
-        if len(q) == 0:
-            return
+        with lock:
+            if len(q) == 0:
+                return
 
-        action = q.popleft()
+            action = q.popleft()
+
         robot.move(action)
 
     try:
@@ -226,4 +203,6 @@ def main(
 
 
 if __name__ == "__main__":
-    main()
+    import tyro
+
+    tyro.cli(serve_teleop)
