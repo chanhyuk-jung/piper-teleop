@@ -17,7 +17,18 @@ class VideoWriter:
     def __init__(self, path, fps):
         self.container = av.open(path, mode="w")
 
-        self.stream = self.container.add_stream("h264", rate=fps)
+        options = {
+            "crf": "21",
+            "me": "umh",
+            "subme": "9",
+            "aq-mode": "2",
+            "no-fast-pskip": "1",
+            "ref": "4",
+        }
+        options["keyint"] = str(fps * 10)
+        options["bframes"] = "8"
+
+        self.stream = self.container.add_stream("h264", rate=fps, options=options)
 
         self.path = path
 
