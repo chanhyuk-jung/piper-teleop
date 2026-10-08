@@ -1,13 +1,41 @@
+import os
 import threading
 import time
 from collections import deque
+from pathlib import Path
 from threading import Lock, Thread
 from typing import cast
 
+import av
 import numpy as np
 import zarr
 
 chunk_size = 128
+
+
+class VideoWriter:
+    def __init__(self, path, fps):
+        self.container = av.open(path, mode="w")
+
+        self.stream = self.container.add_stream("h264", rate=fps)
+
+        self.path = path
+
+    def write(self, img):
+        frame = av.VideoFrame.from_ndarray(img, format="rgb24")
+        for packet in self.stream.encode(frame):
+            self.container.mux(packet)
+
+    def flush(self):
+        for packet in self.stream.encode():
+            self.container.mux(packet)
+
+        self.container.close()
+
+    def delete(self):
+        self.flush()
+
+        os.remove(self.path)
 
 
 def flatten_dict(d: dict, parent_key: str = "", sep: str = "/") -> dict:
@@ -24,8 +52,12 @@ def flatten_dict(d: dict, parent_key: str = "", sep: str = "/") -> dict:
 
 
 class ZarrRecorder:
-    def __init__(self, path: str):
+    def __init__(self, path: str, hz: int):
+        self.data_dir = Path(path)
         self.root = zarr.group(store=path, overwrite=False)
+
+        self.video_writers: dict[str, VideoWriter] = {}
+        self.hz = hz
 
         self.length = self.end
 
@@ -60,6 +92,25 @@ class ZarrRecorder:
         for path, x in flat.items():
             x = np.asarray(x)
 
+            if "img" in path:
+                if path not in self.video_writers:
+                    parent_dir = self.data_dir / path
+                    parent_dir.mkdir(parents=True, exist_ok=True)
+
+                    if "episode_ends" not in self.root:
+                        index = 0
+                    else:
+                        index = self.root.get_array("episode_ends").shape[0]
+
+                    video_path: Path = parent_dir / f"{index}.mp4"
+
+                    self.video_writers[path] = VideoWriter(video_path, self.hz)
+
+                for img in x:
+                    self.video_writers[path].write(img)
+
+                continue
+
             if path not in self.root:
                 z = self.root.create_array(
                     name=path,
@@ -80,6 +131,9 @@ class ZarrRecorder:
         self.length += int(lengths.pop())
 
     def finish(self):
+        if self.paths is None:
+            return
+
         if self.end == self.length:
             return
 
@@ -95,8 +149,24 @@ class ZarrRecorder:
             z = self.root.get_array("episode_ends")
             z.append(self.length)
 
+        for path in self.paths:
+            if "img" in path:
+                self.video_writers[path].flush()
+                del self.video_writers[path]
+
     def trim(self):
+        if "paths" not in self.root.attrs:
+            return
+
         for path in cast(list, self.root.attrs["paths"]):
+            if "img" in path:
+                if path not in self.video_writers:
+                    continue
+
+                self.video_writers[path].delete()
+                del self.video_writers[path]
+                continue
+
             z = self.root.get_array(path)
             z.resize((int(self.end), *z.shape[1:]))
 

@@ -45,7 +45,7 @@ def serve_teleop(
     wrist.start_thread()
     front.start_thread()
 
-    recorder = ZarrRecorder(data_path)
+    recorder = ZarrRecorder(data_path, hz)
     record_thread = RecordThread(recorder, bufsize)
 
     record_thread.start_thread()
