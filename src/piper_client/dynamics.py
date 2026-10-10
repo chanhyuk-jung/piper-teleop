@@ -18,8 +18,11 @@ class Dynamics:
         dt: float = 0.001,
         pos_weight: float = 1.0,
         rot_weight: float = 1e-2,
+        iters: int = 4,
     ) -> None:
         super().__init__()
+
+        self.iters = iters
 
         self.effector_name = effector_name
         self.gripper_name = gripper_name
@@ -83,8 +86,9 @@ class Dynamics:
         if vel is not None:
             self.effector_task.position().dtarget_world = np.asarray(vel)
 
-        self.solver.solve(True)
-        self.robot.update_kinematics()
+        for _ in range(self.iters):
+            self.solver.solve(True)
+            self.robot.update_kinematics()
 
         joints = self.get_joints()
         return joints

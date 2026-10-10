@@ -29,11 +29,12 @@ class EffectorPlanner:
 
 
 class JointPlanner:
-    def __init__(self, dt, alpha: float = 1.0):
+    def __init__(self, dt, alpha: float = 1.0, max_vel: float = 100.0):
         self.dt = dt
         self.alpha = alpha
 
         self.start = np.zeros(7)
+        self.max_vel = max_vel
 
     def set_start(self, qpos: ArrayLike):
         self.start = np.asarray(qpos, dtype=np.float64)
@@ -41,6 +42,8 @@ class JointPlanner:
     def plan(self, end, dt):
         end = end * self.alpha + self.start * (1 - self.alpha)
         vel = (end - self.start) / dt
+        max_vel = np.ones_like(vel) * self.max_vel
+        vel = np.min(np.stack([vel, max_vel]), axis=0)
 
         times = np.linspace(0, 1, max(int(dt / self.dt), 2))
         times = times[1:] * dt

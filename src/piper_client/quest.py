@@ -17,7 +17,13 @@ def quest_to_flange(pos: ArrayLike, quat: ArrayLike) -> NDArray[np.float64]:
     x, y, z = pos
     m[:3, -1] = np.array([-z, -x, y])
 
-    A = np.array([[0, -1, 0], [-1, 0, 0], [0, 0, -1]]).T
+    A = np.array(
+        [
+            [0, -1, 0],
+            [-1, 0, 0],
+            [0, 0, -1],
+        ]
+    ).T
     m[:3, :3] = A.T @ R.from_quat(quat).as_matrix() @ A
 
     return m

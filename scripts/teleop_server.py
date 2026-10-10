@@ -25,18 +25,25 @@ def serve_teleop(
     front_cam: int,
     port=4000,
     hz: int = 90,
-    multiplier: int = 10,
-    ema: float = 0.3,
+    multiplier: int = 5,
+    ema: float = 0.5,
     gripper_ema: float = 0.2,
     bufsize: int = 128,
+    iters: int = 8,
 ):
     dt = 1 / (hz * multiplier)
 
     robot = PiperFollower(can, dt=dt)
-    solver = Dynamics(urdf, effector_name=task_name, gripper_name=gripper_name, dt=dt)
+    solver = Dynamics(
+        urdf,
+        effector_name=task_name,
+        gripper_name=gripper_name,
+        dt=dt / iters,
+        iters=iters,
+    )
 
     ee_planner = EffectorPlanner(dt, alpha=ema)
-    q_planner = JointPlanner(dt, alpha=1.0)
+    q_planner = JointPlanner(dt, alpha=1.0, max_vel=0.5)
 
     gripper_planner = JointPlanner(dt, alpha=gripper_ema)
 
