@@ -5,14 +5,13 @@ from threading import Event, Lock
 
 import numpy as np
 from ischedule import run_loop, schedule
-from websockets import ServerConnection
-
 from piper_client.camera import CameraThread, open_camera
 from piper_client.dynamics import Dynamics
 from piper_client.planning import EffectorPlanner, JointPlanner
 from piper_client.quest import QuestThread, quest_to_flange
 from piper_client.recording import RecordThread, ZarrRecorder
 from piper_client.robots import PiperFollower
+from websockets import ServerConnection
 
 
 def serve_teleop(

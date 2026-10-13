@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 
 [project]
-name = "piper-client"
+name = "pyper"
 requires-python = ">=3.12"
 dependencies = [
     "pyAgxArm @ https://github.com/agilexrobotics/pyAgxArm.git",
@@ -19,7 +19,7 @@ dependencies = [
     "rerun-sdk",
     "av",
 ]
-version = "0.0.0"
+version = "0.0.1"
 
 [project.optional-dependencies]
 dev = [

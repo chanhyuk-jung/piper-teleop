@@ -1015,50 +1015,6 @@ wheels = [
 ]
 
 [[package]]
-name = "piper-client"
-version = "0.0.0"
-source = { editable = "." }
-dependencies = [
-    { name = "av" },
-    { name = "ischedule" },
-    { name = "numpy" },
-    { name = "opencv-python-headless" },
-    { name = "placo" },
-    { name = "pyagxarm" },
-    { name = "rerun-sdk" },
-    { name = "scipy" },
-    { name = "tyro" },
-    { name = "websockets" },
-    { name = "zarr" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "mypy" },
-    { name = "ruff" },
-    { name = "ty" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "av" },
-    { name = "ischedule" },
-    { name = "mypy", marker = "extra == 'dev'" },
-    { name = "numpy", specifier = ">=2.0.0,<2.3.0" },
-    { name = "opencv-python-headless", specifier = ">=4.9.0,<4.14.0" },
-    { name = "placo" },
-    { name = "pyagxarm", git = "https://github.com/agilexrobotics/pyAgxArm.git" },
-    { name = "rerun-sdk" },
-    { name = "ruff", marker = "extra == 'dev'" },
-    { name = "scipy" },
-    { name = "ty", marker = "extra == 'dev'" },
-    { name = "tyro" },
-    { name = "websockets" },
-    { name = "zarr", specifier = ">=3.2.0" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "placo"
 version = "0.9.16"
 source = { registry = "https://pypi.org/simple" }
@@ -1214,6 +1170,50 @@ sdist = { url = "https://files.pythonhosted.org/packages/8d/ae/6664934258773db46
 wheels = [
     { url = "https://files.pythonhosted.org/packages/07/5c/7733776a6a9704bffee19d203f9be80f25f78a5011a9863971be60fe2763/pyngrok-8.1.2-py3-none-any.whl", hash = "sha256:849e9f55706288b00eb28f4ae8ea16b05e52c609f80ef4a88ca23b385f2f9178", size = 25935, upload-time = "2026-04-29T15:16:52.088Z" },
 ]
+
+[[package]]
+name = "pyper"
+version = "0.0.1"
+source = { editable = "." }
+dependencies = [
+    { name = "av" },
+    { name = "ischedule" },
+    { name = "numpy" },
+    { name = "opencv-python-headless" },
+    { name = "placo" },
+    { name = "pyagxarm" },
+    { name = "rerun-sdk" },
+    { name = "scipy" },
+    { name = "tyro" },
+    { name = "websockets" },
+    { name = "zarr" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "mypy" },
+    { name = "ruff" },
+    { name = "ty" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "av" },
+    { name = "ischedule" },
+    { name = "mypy", marker = "extra == 'dev'" },
+    { name = "numpy", specifier = ">=2.0.0,<2.3.0" },
+    { name = "opencv-python-headless", specifier = ">=4.9.0,<4.14.0" },
+    { name = "placo" },
+    { name = "pyagxarm", git = "https://github.com/agilexrobotics/pyAgxArm.git" },
+    { name = "rerun-sdk" },
+    { name = "ruff", marker = "extra == 'dev'" },
+    { name = "scipy" },
+    { name = "ty", marker = "extra == 'dev'" },
+    { name = "tyro" },
+    { name = "websockets" },
+    { name = "zarr", specifier = ">=3.2.0" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "python-can"

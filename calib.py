@@ -1,5 +1,4 @@
 import numpy as np
-
 from piper_client.bus import Bus
 
 bus = Bus("can0")
