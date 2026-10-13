@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 
 [project]
-name = "pyper"
+name = "piper-teleop"
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=2.0.0,<2.3.0",
@@ -17,6 +17,7 @@ dependencies = [
     "zarr>=3.2.0",
     "rerun-sdk",
     "av",
+    "agx_bus>=0.1.0",
 ]
 version = "0.0.1"
 
@@ -27,6 +28,8 @@ dev = [
     "mypy",
 ]
 
+[project.scripts]
+teleop-server = "piper_teleop.server:server_cli"
 
 [tool.ruff]
 line-length = 88

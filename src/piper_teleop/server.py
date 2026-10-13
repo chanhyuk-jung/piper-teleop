@@ -5,13 +5,14 @@ from threading import Event, Lock
 
 import numpy as np
 from ischedule import run_loop, schedule
-from piper_client.camera import CameraThread, open_camera
-from piper_client.dynamics import Dynamics
-from piper_client.planning import EffectorPlanner, JointPlanner
-from piper_client.quest import QuestThread, quest_to_flange
-from piper_client.recording import RecordThread, ZarrRecorder
-from piper_client.robots import PiperFollower
 from websockets import ServerConnection
+
+from .camera import CameraThread, open_camera
+from .dynamics import Dynamics
+from .planning import EffectorPlanner, JointPlanner
+from .quest import QuestThread, quest_to_flange
+from .recording import RecordThread, ZarrRecorder
+from .robots import PiperFollower
 
 
 def serve_teleop(
@@ -221,7 +222,7 @@ def serve_teleop(
         robot.close()
 
 
-if __name__ == "__main__":
+def server_cli():
     import tyro
 
     tyro.cli(serve_teleop)
