@@ -2,202 +2,201 @@ import os
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock, Thread
-from typing import cast
+from typing import Any, Literal, cast
 
-import av
 import numpy as np
+import optree
 import zarr
+from imagecodecs.zarr import ArrayBytesCodec, Jpeg, register_codecs
+from numpy.typing import NDArray
+from optree.pytree import PyTreeSpec
 
-chunk_size = 128
+register_codecs()
 
 
-class VideoWriter:
-    def __init__(self, path, fps):
-        self.container = av.open(path, mode="w")
+def makedirs(path: str | os.PathLike):
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
 
-        options = {
-            "crf": "22",
-            "preset": "6",
-            "keyint": "10s",
-            "tune": "0",
-            "scd": "1",
-            "scm": "0",
-        }
 
-        self.stream = self.container.add_stream("av1", rate=fps, options=options)
+def array_keys(root: zarr.Group) -> set[str]:
+    array_keys = list(root.array_keys())
+    group_keys = list(root.group_keys())
 
-        self.path = path
+    while len(group_keys) > 0:
+        new_keys = []
+        for name in group_keys:
+            g = root.get_group(name)
 
-    def write(self, img):
-        frame = av.VideoFrame.from_ndarray(img, format="rgb24")
-        for packet in self.stream.encode(frame):
-            self.container.mux(packet)
+            array_keys.extend([f"{name}/{key}" for key in g.array_keys()])
+            new_keys.extend([f"{name}/{key}" for key in g.group_keys()])
 
-    def flush(self):
-        for packet in self.stream.encode():
-            self.container.mux(packet)
+        group_keys = new_keys
 
-        self.container.close()
+    return set(array_keys)
 
-    def delete(self):
+
+def treespec_names(treespec: PyTreeSpec) -> list[tuple[str, ...]]:
+    paths = optree.treespec_paths(treespec)
+    names = [tuple(str(name) for name in path) for path in paths]
+    return names
+
+
+def group_tree(group: zarr.Group):
+    tree = {}
+
+    for key in group.array_keys():
+        tree[key] = group.get_array(key)
+
+    for key in group.group_keys():
+        tree[key] = group_structure(group.get_group(key))
+
+    return tree
+
+
+def group_structure(group: zarr.Group):
+    treespec = {}
+
+    for key in group.array_keys():
+        treespec[key] = optree.treespec.leaf()
+
+    for key in group.group_keys():
+        treespec[key] = group_structure(group.get_group(key))
+
+    if len(treespec.values()) > 0:
+        return optree.treespec.dict(treespec)
+
+    return None
+
+
+@dataclass(frozen=True)
+class Image:
+    frame: NDArray[np.uint8]
+    codec: ArrayBytesCodec | Literal["auto"] = "auto"
+
+    def __post_init__(self):
+        if self.codec == "auto":
+            object.__setattr__(self, "codec", Jpeg(level=90))
+
+
+class DatasetWriter:
+    def __init__(
+        self, path: str | os.PathLike, *, shard_size: int = 32, buffer_size: int = 128
+    ):
+        root_dir = Path(path)
+
+        makedirs(root_dir.parent)
+
+        self._group = zarr.group(path)
+        self._treespec = group_structure(self._group)
+
+        self.shard_size = shard_size
+
+        self._buffer = []
+        self.buffer_size = buffer_size
+
+        if self._treespec is None:
+            self._group.update_attributes({"length": 0, "episode_ends": []})
+
+        self._length = cast(int, self._group.attrs["length"])
+
+    def add(self, tree: Any, /) -> None:
+        leaves, treespec = optree.tree_flatten(tree)
+
+        if self._treespec is None:
+            self._treespec = treespec
+
+        elif treespec != self._treespec:
+            raise ValueError
+
+        self._buffer.append(leaves)
+
+        if len(self._buffer) >= self.buffer_size:
+            self.flush()
+
+    def mark_last(self):
         self.flush()
 
-        os.remove(self.path)
+        self._group.update_attributes({"length": self._length})
 
+        ends = cast(list[int], self._group.attrs["episode_ends"])
+        ends.append(self._length)
 
-def flatten_dict(d: dict, parent_key: str = "", sep: str = "/") -> dict:
-    items = []
-    for k, v in d.items():
-        new_key = f"{parent_key}{sep}{k}" if parent_key else k
+        self._group.update_attributes({"episode_ends": ends})
 
-        if isinstance(v, dict):
-            items.extend(flatten_dict(v, new_key, sep=sep).items())
-        else:
-            items.append((new_key, v))
+    def flush(self) -> None:
+        if len(self._buffer) == 0:
+            return
 
-    return dict(items)
+        names = treespec_names(self._treespec)
 
+        for i, name in enumerate(names):
+            name = os.path.join(*name)
 
-class ZarrRecorder:
-    def __init__(self, path: str, hz: int):
-        self.data_dir = Path(path)
-        self.root = zarr.group(store=path, overwrite=False)
+            if isinstance(self._buffer[0][i], Image):
+                x = np.stack([buf[i].frame for buf in self._buffer])
 
-        self.video_writers: dict[str, VideoWriter] = {}
-        self.hz = hz
+                serializer = self._buffer[0][i].codec
+                chunk_size = 1
+            else:
+                x = np.stack([buf[i] for buf in self._buffer])
 
-        self.length = self.end
+                serializer = "auto"
+                chunk_size = self.shard_size
 
-        self.paths = None
-        if "paths" in self.root.attrs:
-            self.paths = cast(list, self.root.attrs["paths"])
+            length = x.shape[0]
 
-    @property
-    def end(self):
-        end = np.array([0], dtype=np.int64)
+            if name in self._group:
+                z = self._group.get_array(name)
+                z.resize((z.shape[0] + length, *z.shape[1:]))
 
-        if "episode_ends" in self.root:
-            z = self.root.get_array("episode_ends")
-
-            if z.shape[0] > 0:
-                i = z.shape[0]
-                end = np.asarray(z[i - 1 : i], dtype=np.int64)
-
-        return end
-
-    def add(self, nested: dict):
-        flat = flatten_dict(nested)
-
-        self.paths = list(flat.keys())
-        self.root.update_attributes({"paths": self.paths})
-
-        if set(flat.keys()) != set(self.paths):
-            raise RuntimeError
-
-        lengths = set()
-
-        for path, x in flat.items():
-            x = np.asarray(x)
-
-            if "img" in path:
-                if path not in self.video_writers:
-                    parent_dir = self.data_dir / path
-                    parent_dir.mkdir(parents=True, exist_ok=True)
-
-                    if "episode_ends" not in self.root:
-                        index = 0
-                    else:
-                        index = self.root.get_array("episode_ends").shape[0]
-
-                    video_path: Path = parent_dir / f"{index}.mp4"
-
-                    self.video_writers[path] = VideoWriter(video_path, self.hz)
-
-                for img in x:
-                    self.video_writers[path].write(img)
-
-                continue
-
-            if path not in self.root:
-                z = self.root.create_array(
-                    name=path,
+            else:
+                z = self._group.create_array(
+                    name,
                     shape=x.shape,
                     dtype=x.dtype,
                     chunks=[chunk_size, *x.shape[1:]],
+                    shards=[self.shard_size, *x.shape[1:]],
+                    compressors=None,
+                    serializer=serializer,
                 )
-                z[:] = x
-            else:
-                z = self.root.get_array(path)
-                z.append(x)
 
-            lengths.add(x.shape[0])
+            z[-length:] = x
 
-        if len(lengths) != 1:
-            raise RuntimeError
+        self._length += length
+        self._buffer = []
 
-        self.length += int(lengths.pop())
+    def prune(self) -> None:
+        length = cast(int, self._group.attrs["length"])
 
-    def finish(self):
-        if self.paths is None:
+        if self._treespec is None:
             return
 
-        if self.end == self.length:
-            return
+        names = treespec_names(self._treespec)
 
-        if "episode_ends" not in self.root:
-            z = self.root.create_array(
-                name="episode_ends",
-                shape=(1,),
-                dtype=np.int64,
-                chunks=(chunk_size,),
-            )
-            z[:] = self.length
-        else:
-            z = self.root.get_array("episode_ends")
-            z.append(self.length)
+        for name in names:
+            name = os.path.join(*name)
 
-        for path in self.paths:
-            if "img" in path:
-                self.video_writers[path].flush()
-                del self.video_writers[path]
+            z = self._group.get_array(name)
 
-    def trim(self):
-        if "paths" not in self.root.attrs:
-            return
-
-        for path in cast(list, self.root.attrs["paths"]):
-            if "img" in path:
-                if path not in self.video_writers:
-                    continue
-
-                self.video_writers[path].delete()
-                del self.video_writers[path]
-                continue
-
-            z = self.root.get_array(path)
-            z.resize((int(self.end), *z.shape[1:]))
+            if z.shape[0] > length:
+                z.resize([length, *z.shape[1:]])
 
 
 class RecordThread(Thread):
     _ready = True
 
-    def __init__(self, recorder: ZarrRecorder, bufsize: int = 128):
+    def __init__(self, writer: DatasetWriter):
         super().__init__()
-        self.recorder = recorder
+        self.writer = writer
 
         self.q = deque()
         self.lock = Lock()
 
         self.stop_event = threading.Event()
-
-        self.buffer = []
-        self.bufsize = bufsize
-
-        self.keys = set()
-        if self.recorder.paths is not None:
-            self.keys = set(self.recorder.paths)
 
     def run(self):
         while not self.stop_event.is_set():
@@ -214,38 +213,12 @@ class RecordThread(Thread):
         event = msg["event"]
 
         if event == "record":
-            flat = flatten_dict(msg["data"])
-
-            if len(self.keys) == 0:
-                self.keys = set(flat.keys())
-
-            if set(flat.keys()) != self.keys:
-                raise ValueError
-
-            self.buffer.append(flat)
-
-            if len(self.buffer) >= self.bufsize:
-                self.flush()
+            self.writer.add(msg["data"])
 
         elif event == "save":
-            if len(self.buffer) > 0:
-                self.flush()
-
-            self.recorder.finish()
+            self.writer.mark_last()
 
             self._ready = True
-
-    def flush(self):
-        if self.stop_event.is_set():
-            return
-
-        stacked = {
-            key: np.stack([flat[key] for flat in self.buffer]) for key in self.keys
-        }
-
-        self.recorder.add(stacked)
-
-        self.buffer = []
 
     def record(self, obs, action):
         self._ready = False
@@ -258,9 +231,9 @@ class RecordThread(Thread):
     def cancel(self):
         with self.lock:
             self.q.clear()
-            self.buffer = []
 
-            self.recorder.trim()
+            self.writer.flush()
+            self.writer.prune()
 
             self._ready = True
 
@@ -274,4 +247,5 @@ class RecordThread(Thread):
     def stop_thread(self):
         self.stop_event.set()
 
-        self.recorder.trim()
+        self.writer.flush()
+        self.writer.prune()

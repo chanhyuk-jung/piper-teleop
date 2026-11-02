@@ -4,11 +4,8 @@ from numpy.typing import ArrayLike, NDArray
 
 
 class PiperFollower:
-    def __init__(self, channel: str, *, dt: float, timeout: float = 1.0):
-        self.dt = dt
-        self.timeout: float = timeout
-
-        self.bus = AgilexBus(channel, name="piper", version="default")
+    def __init__(self, channel: str, *, timeout: float = 1.0):
+        self.bus = AgilexBus(channel, name="piper", version="default", timeout=timeout)
         self.ee = AgilexGripper.attach_to(self.bus)
 
         self.bus.connect()

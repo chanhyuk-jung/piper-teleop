@@ -2,17 +2,19 @@ import json
 import time
 from collections import deque
 from threading import Event, Lock
+from typing import cast
 
 import numpy as np
+from agx_bus import AgilexBus, AgilexGripper
 from ischedule import run_loop, schedule
+from numpy.typing import NDArray
 from websockets import ServerConnection
 
 from .camera import CameraThread, open_camera
 from .dynamics import Dynamics
 from .planning import EffectorPlanner, JointPlanner
 from .quest import QuestThread, quest_to_flange
-from .recording import RecordThread, ZarrRecorder
-from .robots import PiperFollower
+from .recording import DatasetWriter, Image, RecordThread
 
 
 def serve_teleop(
@@ -28,12 +30,27 @@ def serve_teleop(
     multiplier: int = 5,
     ema: float = 0.5,
     gripper_ema: float = 0.2,
+    shard_size: int = 1024,
     bufsize: int = 128,
     iters: int = 8,
 ):
     dt = 1 / (hz * multiplier)
 
-    robot = PiperFollower(can, dt=dt)
+    bus = AgilexBus(can, name="piper", version="default")
+    ee = AgilexGripper(bus)
+
+    bus.connect()
+
+    bus.enable_torque()
+
+    bus.move_joints([0.0] * 6)
+    ee.move_gripper(width=0.0)
+
+    state = bus.read_state()
+    while not state.reached:
+        time.sleep(0.01)
+        state = bus.read_state()
+
     solver = Dynamics(
         urdf,
         effector_name=task_name,
@@ -42,7 +59,7 @@ def serve_teleop(
         iters=iters,
     )
 
-    ee_planner = EffectorPlanner(dt, alpha=ema)
+    task_planner = EffectorPlanner(dt, alpha=ema)
     q_planner = JointPlanner(dt, alpha=1.0, max_vel=0.5)
 
     gripper_planner = JointPlanner(dt, alpha=gripper_ema)
@@ -56,8 +73,8 @@ def serve_teleop(
     wrist.start_thread()
     front.start_thread()
 
-    recorder = ZarrRecorder(data_path, hz)
-    record_thread = RecordThread(recorder, bufsize)
+    writer = DatasetWriter(data_path, shard_size=shard_size, buffer_size=bufsize)
+    record_thread = RecordThread(writer)
 
     record_thread.start_thread()
 
@@ -76,17 +93,19 @@ def serve_teleop(
     def update_home(msg):
         nonlocal robot_home
 
-        qpos = robot.get_state()["qpos"]
-        solver.set_joints(qpos[:6])
+        joints = bus.read_joints()
+        gripper = ee.read_gripper()
+
+        solver.set_joints(joints.position)
 
         payload = msg["payload"]
 
         robot_home = solver.forward()
 
-        ee_planner.set_start(robot_home)
+        task_planner.set_start(robot_home)
         quest.set_anchor(quest_to_flange(payload["position"], payload["quaternion"]))
 
-        gripper_planner.set_start(np.array(qpos[6]))
+        gripper_planner.set_start(np.array(gripper.width))
 
         cancel_event.clear()
 
@@ -102,7 +121,9 @@ def serve_teleop(
             q.clear()
 
         record_thread.cancel()
-        robot.move_to_zero()
+
+        bus.move_joints([0.0] * 6)
+        ee.move_gripper(width=0.0)
 
     @quest.subscribe("go_home")
     def go_home(msg):
@@ -125,18 +146,24 @@ def serve_teleop(
     @schedule(interval=1 / hz)
     def record_loop():
         t0 = time.perf_counter()
-        state = robot.get_state()
+        joints = bus.read_joints()
+        gripper = ee.read_gripper()
 
-        wrist_img = wrist.latest_frame
-        front_img = front.latest_frame
+        state = {
+            "qpos": np.append(joints.position, gripper.width),
+            "qvel": np.append(joints.velocity, gripper.force),
+        }
+
+        wrist_img = cast(NDArray, wrist.latest_frame)
+        front_img = cast(NDArray, front.latest_frame)
 
         obs = {}
         obs.update(state)
 
         obs["timestamp"] = np.array(t0)
 
-        obs["wrist_img"] = wrist_img
-        obs["front_img"] = front_img
+        obs["wrist_img"] = Image(wrist_img)
+        obs["front_img"] = Image(front_img)
 
         if len(msg_q) == 0 or cancel_event.is_set():
             return
@@ -161,21 +188,18 @@ def serve_teleop(
 
             gripper = payload["gripper"]
 
-            ee = gripper ** (1 / 2) * 0.1
+            gripper = gripper ** (1 / 2) * 0.1
 
-            ee_traj = ee_planner.plan(task_frame, dt=msg["delta"])
-            gripper_traj = gripper_planner.plan(np.array(ee), dt=msg["delta"])
+            task_traj = task_planner.plan(task_frame, dt=msg["delta"])
+            gripper_traj = gripper_planner.plan(np.array(gripper), dt=msg["delta"])
 
-            for (waypoint, vel), gripper_t in zip(ee_traj, gripper_traj, strict=True):
+            for (waypoint, vel), gripper_t in zip(task_traj, gripper_traj, strict=True):
                 qpos = solver.inverse(waypoint, vel=vel)
-                qpos = qpos[:6]
 
-                qpos = np.append(qpos, gripper_t)
-
+                qpos = np.append(qpos[:6], gripper_t)
                 q.append(qpos)
 
-            qpos = solver.get_joints()
-            action = {"qpos": np.append(qpos[:6], ee)}
+            action = {"qpos": qpos}
 
         elif msg["type"] == "go_home":
             qpos = np.asarray(solver.get_joints()[:7], dtype=np.float64)
@@ -203,10 +227,12 @@ def serve_teleop(
 
             action = q.popleft()
 
-        robot.move(action)
+        bus.move_joints(action[:6])
+        ee.move_gripper(width=action[6])
 
     try:
         run_loop(stop_control)
+
     except KeyboardInterrupt:
         print("closing server...")
 
@@ -216,10 +242,16 @@ def serve_teleop(
         front.stop_thread()
         quest.stop_thread()
 
-        robot.move_to_zero()
+        bus.move_joints([0.0] * 6)
+        ee.move_gripper(width=0.0)
+
+        state = bus.read_state()
+        while not state.reached:
+            time.sleep(0.01)
+            state = bus.read_state()
 
         record_thread.stop_thread()
-        robot.close()
+        bus.disconnect()
 
 
 def server_cli():

@@ -1,6 +1,12 @@
 [build-system]
-requires = ["uv_build >= 0.12.10, <0.13.0"]
-build-backend = "uv_build"
+requires = ["hatchling >= 1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/piper_teleop/__init__.py"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 
 [project]
@@ -16,17 +22,13 @@ dependencies = [
     "opencv-python-headless>=4.9.0,<4.14.0",
     "zarr>=3.2.0",
     "rerun-sdk",
-    "av",
-    "agx_bus>=0.1.0",
+    "agx_bus>=0.4.0",
+    "tqdm",
+    "optree",
+    "pillow",
+    "imagecodecs[all]>v2026.5.10",
 ]
 version = "0.0.1"
-
-[project.optional-dependencies]
-dev = [
-    "ruff",
-    "ty",
-    "mypy",
-]
 
 [project.scripts]
 teleop-server = "piper_teleop.server:server_cli"
